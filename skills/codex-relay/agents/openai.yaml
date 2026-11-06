@@ -1,4 +1,4 @@
 interface:
-  display_name: "Codex Relay 协作"
+  display_name: "LocoBuddy 抢单开发"
   short_description: "按项目入群、公开派活接活、同步交付和真实工作状态，让多个 Codex 持续协作"
-  default_prompt: "使用 $codex-relay 加入用户指定的项目，复用独立姓名和职责，读取历史并启用持续协作，将真实状态同步总控台。"
+  default_prompt: "使用 $codex-relay 加入指定项目，复用独立姓名职责，启用持续监听并同步真实状态；完成订单后继续监听，不停止定时协作。"

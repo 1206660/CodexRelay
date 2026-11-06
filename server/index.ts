@@ -11,9 +11,12 @@ import { listMembers } from "../lib/member-service";
 import JoinView from "../components/join-view";
 import { env,nativeDb } from "./node-env";
 import { overviewAuthorized } from "../lib/overview-auth";
+import {startIntakeWorker} from "./intake-worker";
+import {attachRoomSockets} from "./room-sockets";
 const here=path.dirname(fileURLToPath(import.meta.url)),publicDir=path.join(here,"public");
 const types:Record<string,string>={".html":"text/html; charset=utf-8",".js":"text/javascript; charset=utf-8",".css":"text/css; charset=utf-8",".svg":"image/svg+xml",".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".ico":"image/x-icon",".json":"application/json; charset=utf-8",".woff2":"font/woff2"};
 const template=await readFile(path.join(publicDir,"index.html"),"utf8");
+const stopIntake=await startIntakeWorker();
 const server=createServer(async(req,res)=>{
   try{
     const publicOrigin=process.env.RELAY_PUBLIC_URL||"http://"+req.headers.host;
@@ -29,6 +32,10 @@ const server=createServer(async(req,res)=>{
       const request=new Request(url,{method:effectiveMethod,headers,...(effectiveMethod!=="GET"?{body:Readable.toWeb(req) as any,duplex:"half"}:{})} as RequestInit);
       const handler=effectiveMethod==="GET"?GET:effectiveMethod==="POST"?POST:effectiveMethod==="PATCH"?PATCH:null;
       const response=handler?await handler(request):Response.json({error:{message:"请求方法不支持"}},{status:405});
+      if(response.ok&&effectiveMethod!=="GET"){
+        const match=url.pathname.match(/^\/api\/v1\/(?:projects|rooms)\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})(?:\/|$)/);
+        if(match&&(!url.pathname.includes("/intakes")||url.pathname.endsWith("/dispatch"))){let message:any=null;try{const data:any=await response.clone().json();if(data.message)message={id:data.message.id,sender:data.message.sender,summary:data.message.summary,kind:data.message.kind};}catch{}roomSockets.publish(match[1],{message});}
+      }
       res.writeHead(response.status,Object.fromEntries(response.headers.entries()));res.end(req.method==="HEAD"?undefined:Buffer.from(await response.arrayBuffer()));return;
     }
     if(req.method!=="GET"&&req.method!=="HEAD"){res.writeHead(405);res.end();return;}
@@ -51,6 +58,7 @@ const server=createServer(async(req,res)=>{
   }catch(e){console.error("Request failed",e instanceof Error?e.message:"unknown");if(!res.headersSent)res.writeHead(500,{"Content-Type":"application/json; charset=utf-8"});res.end(JSON.stringify({error:{message:"服务暂时不可用"}}));}
 });
 server.requestTimeout=30000;server.headersTimeout=35000;
+const roomSockets=attachRoomSockets(server);
 server.listen(Number(process.env.PORT||8790),process.env.HOST||"127.0.0.1",()=>console.log("Codex Relay listening on "+(process.env.HOST||"127.0.0.1")+":"+(process.env.PORT||8790)));
-function shutdown(){server.close(()=>{nativeDb.sqlite.close();process.exit(0);});}
+function shutdown(){stopIntake();roomSockets.close();server.close(()=>{nativeDb.sqlite.close();process.exit(0);});}
 process.on("SIGTERM",shutdown);process.on("SIGINT",shutdown);

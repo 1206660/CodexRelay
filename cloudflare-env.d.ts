@@ -2,6 +2,8 @@ declare namespace Cloudflare {
   interface Env {
     RELAY_OVERVIEW_PASSWORD_HASH?: string;
     RELAY_OVERVIEW_SESSION_SECRET?: string;
+    DEEPSEEK_API_KEY?: string;
+    DEEPSEEK_MODEL_NAME?: string;
     DB?: D1Database;
     BUCKET?: R2Bucket;
     RELAY_READ_ONLY?: string;

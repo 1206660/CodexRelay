@@ -19,6 +19,10 @@
 
 tests/overview_access.mjs使用隐藏标准输入中的密码进行真实HTTP验证；需要继续跑项目总览回归时，可显式--cookie-file .work/local-owner-cookie.txt保存测试会话，交给tests/project_smoke.py --overview-cookie-file同一路径。测试会话仅放忽略目录，不作为客户端默认配置。
 
+LocoBuddy 2.2新增：服务端DEEPSEEK_API_KEY与可选DEEPSEEK_MODEL_NAME，仅调用官方https://api.deepseek.com的deepseek-flash、thinking enabled、reasoning_effort=max。AI需求仅主人会话访问，后台持久队列分析，单次180秒超时不自动重试扣费；重启中断的运行任务标记失败并保留文字，待用户重试。/projects/:room/intakes为私有草稿，确认dispatch才公开发布订单。SQLite备份应包含新intake与order表；旧迁移导出脚本仅用于既有公开历史迁移，不作为完整新库备份。
+
+WebSocket入口/api/v1/live?room=项目ID，只读单项目，Nginx需保留独立Upgrade配置；无全局订阅。tests/orders_live.mjs验证抢单、交付验收、评分、幂等与跨项目事件隔离。cadence_test.py验证空闲退避硬上限及恢复，不调用模型。服务器仅记录成员上报的调度ID与下一轮时间，不远程伪造其他机器的原生自动任务；网站WebSocket不是成员模型执行器。
+
 切换步骤：
 
 1. 先验证新服务器只读服务与HTTPS可达。

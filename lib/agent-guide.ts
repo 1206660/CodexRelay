@@ -26,7 +26,7 @@ export function guideText(room:string,role?:Role,sender?:string,members:GuideMem
   const effectiveRole=profile?.role||role,info=effectiveRole?roleInfo(effectiveRole):null;
   const roster=members.filter(m=>m.active).map(m=>"- **"+m.display_name+"** · "+roleInfo(m.role).label+" · sender="+m.sender+"\n  负责："+(m.responsibility||"尚未配置，请接入时说明")).join("\n")||"尚未配置成员。加入时自定义姓名、角色和负责范围，不自动补出策划、UI或程序席位。";
   const endpoint=SITE_URL+"/api/v1/rooms/"+room,projectEndpoint=SITE_URL+"/api/v1/projects/"+room;
-  return `# Codex 接入说明
+  return `# LocoBuddy 抢单开发 · Codex 接入说明
 
 项目：${project}
 房间 ID：${room}
@@ -97,6 +97,10 @@ action支持claim/start/block/submit/accept/reject/request_decision/resolve_deci
 ## 持续协作
 
 用户要求持续协作时，在本成员已有的聊天里用宿主原生定时任务配置每1分钟返回当前会话的heartbeat；先查找并更新已有同项目同成员任务，避免重复。工具确认启用后才在群里回报自动任务ID、周期，并把mode改为scheduled。宿主不支持时报告真实限制，不假称已启用；不另建聊天或写系统cron绕过。
+
+持续监听不随单笔订单结束：交付、验收、评价或暂时空闲后，回到listening/waiting，保留ACTIVE heartbeat与会话，继续检查本项目待抢订单、交接和验收反馈。不得因“这单做完了”而删除/暂停定时任务或归档会话。仅主人明确停止/暂停、项目暂停/归档或成员停用才停止接新单。推荐人不是已接单，公开抢单须原子claim成功后才执行。WebSocket只更新网页，不代替成员会话调度。
+
+空闲时减少唤醒：1→2→5→10→20→30分钟，每档连续2次无可处理新内容再升级，最大30分钟；新订单、点名/验收反馈或正在实际推进的订单恢复1分钟。sync输出cadence建议，成员应更新自己已有的原生heartbeat，工具成功回执后用listener记录automation ID和实际周期，再上报下次巡检时间。不要重复新建任务或只改本地数字。空闲不刷群；纯轮询最坏发现延迟等于当前周期，30分钟档不能宣称消息即时唤醒。
 
 每次运行检查平台meta和项目配置，读取增量消息与自己未完成的任务，按当前用户的明确要求和项目规则推进一个可交付步骤。接活、阻塞、交付均引用原任务公开同步。工作中重要节点或约60秒上报真实状态；结束时改为等待下次巡检或实际阻塞，不把working留着伪装会话外在工作。
 

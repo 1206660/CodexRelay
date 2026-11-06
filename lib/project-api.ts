@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { TaskError, findTask, importTasks, ownerName, publishMessage } from "./task-service";
 import { ACTION_LABELS, TASK_STATES } from "./control-model";
 import { messageSummary } from "./message-summary";
-import { listMembers } from "./member-service";
+import { listMembers,agentStale } from "./member-service";
 const send = (data: unknown, status=200) => Response.json(data,{status,headers:{"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
 function error(status: number, text: string): never { throw new TaskError(status,text); }
 function text(value: unknown, label: string, max: number, optional=false): string {
@@ -56,12 +56,12 @@ const PROJECT_SQL=`SELECT r.id,r.title,r.description,r.created_at,
   ,COALESCE((SELECT MAX(id) FROM messages m WHERE m.room_id=r.id),0) AS last_message_id
   ,(SELECT kind FROM messages m WHERE m.room_id=r.id ORDER BY id DESC LIMIT 1) AS last_kind
   FROM rooms r LEFT JOIN project_settings s ON s.room_id=r.id`;
-async function projects(db: D1Database) {
+async function projects(db: D1Database,room?:string) {
   const now=Date.now();
-  const rows=(await db.prepare(PROJECT_SQL).bind(now).all<any>()).results;
-  const agents=(await db.prepare("SELECT * FROM agents ORDER BY updated_at DESC").all<any>()).results;
-  const groups=new Map<string,any[]>();for(const agent of agents){agent.stale=now-agent.updated_at>180000;const group=groups.get(agent.room_id)||[];group.push(agent);groups.set(agent.room_id,group);}
-  const members=await listMembers(db),memberGroups=new Map<string,any[]>();for(const member of members){const group=memberGroups.get(member.room_id)||[];group.push(member);memberGroups.set(member.room_id,group);}
+  const rows=(await db.prepare(PROJECT_SQL+(room?" WHERE r.id=?":"")).bind(now,...(room?[room]:[])).all<any>()).results;
+  const agents=(await db.prepare("SELECT * FROM agents "+(room?"WHERE room_id=? ":"")+"ORDER BY updated_at DESC").bind(...(room?[room]:[])).all<any>()).results;
+  const groups=new Map<string,any[]>();for(const agent of agents){agent.stale=agentStale(agent,now);const group=groups.get(agent.room_id)||[];group.push(agent);groups.set(agent.room_id,group);}
+  const members=await listMembers(db,room),memberGroups=new Map<string,any[]>();for(const member of members){const group=memberGroups.get(member.room_id)||[];group.push(member);memberGroups.set(member.room_id,group);}
   for(const p of rows){p.members=memberGroups.get(p.id)||[];p.agents=(groups.get(p.id)||[]).filter(a=>!p.members.some((m:any)=>m.sender===a.sender&&!m.active));p.last_summary=p.last_summary?messageSummary(p.last_summary):null;}
   return rows;
 }
@@ -79,11 +79,12 @@ async function taskList(db:D1Database,query:URLSearchParams,room:string|null) {
   else if(filter==="overdue"){clauses.push("t.due_at<? AND t.status NOT IN ('done','cancelled')");values.push(Date.now());}
   else if(filter!=="all"){if(!Object.hasOwn(TASK_STATES,filter))error(400,"筛选状态不支持");clauses.push("t.status=?");values.push(filter);}
   const q=(query.get("q")||"").trim().slice(0,120);
+  if(query.has("ids")){const ids=(query.get("ids")||"").split(",");if(!ids.length||ids.length>8||ids.some(id=>!/^\d+$/.test(id)||!Number.isSafeInteger(Number(id))||Number(id)<1))error(400,"订单ID列表不正确");clauses.push("t.id IN ("+ids.map(()=>"?").join(",")+")");values.push(...ids.map(Number));}
   if(q){const pattern="%"+q.replace(/[!%_]/g,"!$&")+"%";clauses.push("(t.title LIKE ? ESCAPE '!' OR t.assignee LIKE ? ESCAPE '!' OR t.assigned_to LIKE ? ESCAPE '!' OR CAST(t.id AS TEXT)=?)");values.push(pattern,pattern,pattern,q.replace(/^#/,""));}
   const pageSize=Math.min(100,Math.max(1,integer(query.get("limit"),"limit",50))),offset=integer(query.get("offset"),"offset",0);
-  const from=" FROM tasks t JOIN rooms r ON r.id=t.room_id LEFT JOIN project_settings s ON s.room_id=t.room_id WHERE "+clauses.join(" AND ");
+  const from=" FROM tasks t JOIN rooms r ON r.id=t.room_id LEFT JOIN project_settings s ON s.room_id=t.room_id LEFT JOIN order_details d ON d.task_id=t.id WHERE "+clauses.join(" AND ");
   const [rows,count]=await Promise.all([
-    db.prepare("SELECT t.*,COALESCE(NULLIF(s.name,''),r.title) AS project_name"+from+" ORDER BY CASE WHEN t.status='review' OR t.needs_decision=1 THEN 0 WHEN t.status='blocked' THEN 1 ELSE 2 END,t.updated_at DESC,t.id DESC LIMIT ? OFFSET ?").bind(...values,pageSize+1,offset).all<any>(),
+    db.prepare("SELECT t.*,d.recommended_to,COALESCE(d.dispatch_mode,CASE WHEN t.assigned_to IS NULL THEN 'pool' ELSE 'direct' END) AS dispatch_mode,COALESCE(NULLIF(s.name,''),r.title) AS project_name"+from+" ORDER BY CASE WHEN t.status='review' OR t.needs_decision=1 THEN 0 WHEN t.status='blocked' THEN 1 ELSE 2 END,t.updated_at DESC,t.id DESC LIMIT ? OFFSET ?").bind(...values,pageSize+1,offset).all<any>(),
     db.prepare("SELECT COUNT(*) AS count"+from).bind(...values).first<any>(),
   ]);
   return {tasks:rows.results.slice(0,pageSize),total:count.count,has_more:rows.results.length>pageSize,next_offset:offset+pageSize,server_time:Date.now()};
@@ -117,13 +118,13 @@ async function route(request:Request) {
     try{await db.batch([db.prepare("INSERT INTO rooms(id,title,description,created_at) VALUES(?,?,?,?)").bind(id,name,description,Date.now()),
       db.prepare("INSERT INTO project_settings(room_id,name,goal,milestone,status,is_test,updated_at) VALUES(?,?,?,?,'active',?,?)").bind(id,name,goal,milestone,data.is_test===true?1:0,Date.now())]);}
     catch(e){if(await db.prepare("SELECT id FROM rooms WHERE id=?").bind(id).first())error(409,"项目ID已存在");throw e;}
-    return send({project:(await projects(db)).find(p=>p.id===id)},201);
+    return send({project:(await projects(db,id)).find(p=>p.id===id)},201);
   }
   if(path==="/tasks"&&method==="GET")return send(await taskList(db,url.searchParams,null));
   const match=path.match(/^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})(?:\/(tasks|sync|members)(?:\/(\d+)(?:\/(actions))?)?)?$/);
   if(!match)error(404,"接口不存在");
   const room=match[1],resource=match[2],taskId=match[3]?integer(match[3],"任务ID"):null;
-  const project=(await projects(db)).find(p=>p.id===room);if(!project)error(404,"项目不存在");
+  const project=(await projects(db,room)).find(p=>p.id===room);if(!project)error(404,"项目不存在");
   if(!resource&&method==="GET")return send({project,server_time:Date.now()});
   if(!resource&&method==="PATCH"){
     const d=await body(request),name=text(d.name??project.name,"项目名称",100),goal=text(d.goal??project.goal,"目标",1000,true),milestone=text(d.milestone??project.milestone,"里程碑",200,true);
@@ -139,7 +140,7 @@ async function route(request:Request) {
       .bind(room,name,goal,milestone,status,isTest,now),db.prepare("UPDATE rooms SET title=? WHERE id=?").bind(name,room),
       db.prepare("INSERT INTO messages(room_id,sender,content,summary,kind,recipient,reply_to,client_id,created_at) VALUES(?,?,?,?,'decision',NULL,NULL,?,?) ON CONFLICT(room_id,sender,client_id) DO NOTHING")
       .bind(room,actor,note,name+"：目标、里程碑或项目阶段已更新",key,now)]);
-    return send({project:(await projects(db)).find(p=>p.id===room)});
+    return send({project:(await projects(db,room)).find(p=>p.id===room)});
   }
   if(resource==="sync"&&!taskId&&method==="POST")return send(await importTasks(db,room));
   if(resource==="members"&&!taskId&&method==="GET")return send({members:await listMembers(db,room),server_time:Date.now()});

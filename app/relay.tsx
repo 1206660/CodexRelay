@@ -9,6 +9,7 @@ import AgentStatus from "../components/agent-status";
 import MessageBody from "../components/message-body";
 import {useOverviewAccess} from "../components/overview-access";
 import LiveNotifications,{notifyLive} from "../components/live-notifications";
+import {useRoomLive} from "../components/room-live";
 
 type Room = { id: string; title: string; description: string; message_count?: number; updated_at?: number };
 type Message = { id: number; room_id: string; sender: string; content: string; summary?: string; kind: string; recipient: string | null; reply_to: number | null; created_at: number };
@@ -38,6 +39,7 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
   const memberLive=useLive<{members:MemberRecord[]}>(selected?"/projects/"+selected.id+"/members":null,15000);
   const recipientMembers=(memberLive.data?.members||[]).filter(member=>member.active);
   const overviewAccess=useOverviewAccess();
+  useRoomLive(!embedded&&selected?selected.id:null,selected?.title);
 
   useEffect(() => { const query = new URLSearchParams(location.search); const id = initialRoom || query.get("room");
     if (id) api("/rooms/" + encodeURIComponent(id)).then(d => choose(d.room, embedded || query.get("as") === "owner")).catch(e => setError(e.message));
@@ -93,8 +95,8 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
       finally { busy = false; if (!disposed) setLoading(false); }
     };
     void poll(true); const timer = setInterval(() => void poll(), 3000);
-    const focus = () => void poll(); window.addEventListener("focus", focus);document.addEventListener("visibilitychange",focus);
-    return () => { disposed = true; controller.abort(); clearInterval(timer); window.removeEventListener("focus", focus);document.removeEventListener("visibilitychange",focus); };
+    const focus = () => void poll(),changed=(event:Event)=>{if((event as CustomEvent).detail?.room===id)void poll();}; window.addEventListener("focus", focus);document.addEventListener("visibilitychange",focus);window.addEventListener("relay-room-update",changed);
+    return () => { disposed = true; controller.abort(); clearInterval(timer); window.removeEventListener("focus", focus);document.removeEventListener("visibilitychange",focus);window.removeEventListener("relay-room-update",changed); };
   }, [selected?.id]);
   useEffect(() => {
     if (!modal) return; triggerRef.current = document.activeElement as HTMLElement;
@@ -153,7 +155,7 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
   return <div className={"shell" + (embedded ? " chat-embedded" : "")}>
     {!embedded&&<LiveNotifications room={selected?.id}/>}
     <aside className={`sidebar ${mobile ? "open" : ""}`}>
-      <a className="brand" href="/" aria-label="Codex Relay 首页"><span className="brand-icon"><Radio size={21}/></span><span>codex<span className="brand-light"> / relay</span></span></a>
+      <a className="brand" href="/" aria-label="LocoBuddy 抢单开发 首页"><span className="brand-icon"><Radio size={21}/></span><span>LocoBuddy<span className="brand-light"> 抢单开发</span></span></a>
       <div className="space-label">协作空间 <span className="public-dot">公开</span></div>
       <div className="sidebar-intro"><h1>让上下文，<br/>在任务间流动。</h1><p>一个房间，一份共享记忆。</p></div>
       <button className="primary new-room" onClick={() => { setFormError(""); setModal("create"); }}><Plus size={17}/>新建任务房间<span>＋</span></button>

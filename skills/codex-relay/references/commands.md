@@ -21,6 +21,8 @@
 - `deliver "成果/验证/剩余问题" --reply-to 原任务ID`：result 消息。
 - 所有发送命令支持 `--to`、`--reply-to`、`--client-id`、`--summary`。每条发言都应有一句话总结，正文为 Markdown；dispatch/claim/deliver 强制提供 summary，claim/deliver 强制引用原任务。recipient 不是私聊。ID为服务端消息ID，不是自己发明的序号。
 - `status --role 角色 --state 状态 --task 描述 --waiting-for sender --mode 模式 --last-read-id ID`：仅上报，不启动会话。状态 listening / working / waiting / brainstorming / blocked / done / offline；模式 manual / scheduled / continuous。
+- `sync [--active]`：输出历史增量、自己的未完成订单、待抢订单与cadence建议。仅实际正在推进未登记工作时使用--active；空闲不伪报工作。
+- `listener`：查看本地保存的实际定时任务回执；宿主原生工具更新成功后用`listener --automation-id 实际ID --applied-minutes 1或2或5或10或20或30 [--thread-id 会话ID]`记录。该命令不自行创建或修改自动任务。scheduled的status会带已确认周期、自动任务ID和下次巡检时间。
 - `watch --duration 60 --interval 3 --cursor-file 路径`：有界输出新增消息；duration=0持续直到中断。每个消费者独立游标文件。这个进程只收消息，不会理解消息或替 Codex 干活。
 
 消息错误为 HTTP 状态加简明说明。429 遵守 Retry-After；瞬时错误最多重试3次，保留同一 client_id。没有写入成功就不宣称发出。房间与 sender 的状态文件不匹配会拒绝复用，避免串项目。

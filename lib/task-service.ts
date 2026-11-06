@@ -8,7 +8,7 @@ const CLOSED = ["done", "cancelled"];
 export function ownerName(room: string) { return room.slice(0, 60) + "-owner"; }
 function sameMessage(m: any, p: MessageInput) { return m.content === p.content && m.kind === p.kind && m.recipient === p.recipient && m.reply_to === p.replyTo && (!p.summaryProvided || m.summary === p.summary); }
 export async function findTask(db: D1Database, room: string, id: number) {
-  return db.prepare("SELECT * FROM tasks WHERE room_id=? AND id=?").bind(room, id).first<any>();
+  return db.prepare("SELECT t.*,d.recommended_to,COALESCE(d.dispatch_mode,CASE WHEN t.assigned_to IS NULL THEN 'pool' ELSE 'direct' END) AS dispatch_mode FROM tasks t LEFT JOIN order_details d ON d.task_id=t.id WHERE t.room_id=? AND t.id=?").bind(room, id).first<any>();
 }
 function initialTask(m: any) {
   return { id: m.id, room_id: m.room_id, title: m.summary || messageSummary(m.content), description: m.content, criteria: "", requester: m.sender, assigned_to: m.recipient, assignee: null,

@@ -71,12 +71,15 @@ class Relay:
             **({"summary": summary} if summary is not None else {}),
         })
 
-    def status(self, room, sender, role, state, task="", waiting_for=None, mode="manual", last_read_id=0, display_name=None, responsibility=None):
+    def status(self, room, sender, role, state, task="", waiting_for=None, mode="manual", last_read_id=0, display_name=None, responsibility=None, polling_interval_minutes=1, next_check_at=None, automation_id=None):
         return self.request("/rooms/" + urllib.parse.quote(room, safe="") + "/agents", {
             "sender": sender, "role": role, "state": state, "task": task,
             "waiting_for": waiting_for, "mode": mode, "last_read_id": last_read_id,
             **({"display_name":display_name} if display_name is not None else {}),
             **({"responsibility":responsibility} if responsibility is not None else {}),
+            "polling_interval_minutes":polling_interval_minutes,
+            **({"next_check_at":next_check_at} if next_check_at is not None else {}),
+            **({"automation_id":automation_id} if automation_id else {}),
         })
 
 
@@ -107,17 +110,34 @@ def save_journal(path, state):
 
 
 def sync_history(relay, room, path, state):
-    count = 0
+    count = 0; relevant=False
     while True:
         data = relay.history(room, after=state["last_read_id"])
         for message in data["messages"]:
             output({"event": "message", "message": message})
             count += 1
+            if message["sender"]!=state["sender"] and message.get("recipient") in (None,"",state["sender"]) and (message["kind"]!="status" or message.get("recipient")==state["sender"] or message["sender"]==room[:60]+"-owner"):
+                relevant=True
         state["last_read_id"] = data["next_cursor"]
         save_journal(path, state)
         if not data["has_more"]:
             break
-    return count
+    return count,relevant
+
+
+def update_cadence(state, now, activity=False, working=False, can_work=True, available_ids=()):
+    """Propose cadence; only a confirmed native scheduler update changes applied cadence."""
+    levels=(1,2,5,10,20,30);previous=state.get("cadence",{});available=set(available_ids)
+    newly_available=available-set(previous.get("available_ids",[]))
+    active=bool(activity or working or newly_available or previous.get("suspended") and can_work)
+    idle=max(0,min(10,int(previous.get("idle_rounds",0))));last=float(previous.get("evaluated_at",0));interval=max(1,min(30,int(previous.get("interval_minutes",1))))
+    if not can_work:idle=10;interval=30;last=now
+    elif active:idle=0;interval=1;last=now
+    elif not last:last=now
+    elif now-last>=max(55,interval*60-5):idle=min(10,idle+1);interval=levels[min(len(levels)-1,idle//2)];last=now
+    state["cadence"]={"idle_rounds":idle,"interval_minutes":interval,"evaluated_at":last,"available_ids":sorted(available),"suspended":not can_work}
+    binding=state.get("listener",{});applied=binding.get("applied_minutes")
+    return {"event":"cadence","recommended_minutes":interval,"idle_rounds":idle,"maximum_minutes":30,"automation_id":binding.get("automation_id"),"applied_minutes":applied,"schedule_update_required":applied!=interval,"needs_setup":not binding.get("automation_id"),"reason":"项目暂停、成员停用或服务只读" if not can_work else "有新消息、订单或正在推进的工作" if active else "空闲退避；同一轮重复sync不会累加空转次数","note":"这是调度建议，不代表已经修改宿主定时任务；工具确认更新后用listener记录回执。"}
 
 
 def main():
@@ -146,7 +166,9 @@ def main():
     status.add_argument("--task", default=""); status.add_argument("--waiting-for"); status.add_argument("--mode", default="manual", choices=["manual", "scheduled", "continuous"])
     status.add_argument("--last-read-id", type=int, default=0)
     join = sub.add_parser("join"); join.add_argument("--role", required=True); join.add_argument("--intro", default=""); join.add_argument("--name", help="Display name; defaults to sender")
-    sub.add_parser("sync"); sub.add_parser("agents"); sub.add_parser("meta")
+    sync=sub.add_parser("sync");sync.add_argument("--active",action="store_true",help="Actual work is in progress outside tracked orders")
+    listener=sub.add_parser("listener");listener.add_argument("--automation-id");listener.add_argument("--thread-id");listener.add_argument("--applied-minutes",type=int,choices=[1,2,5,10,20,30])
+    sub.add_parser("agents"); sub.add_parser("meta")
     project_list = sub.add_parser("projects"); project_list.add_argument("--search", default=""); project_list.add_argument("--filter", default="all"); project_list.add_argument("--include-test", action="store_true")
     task_list = sub.add_parser("tasks"); task_list.add_argument("--filter", default="open"); task_list.add_argument("--assignee"); task_list.add_argument("--offset", type=int, default=0)
     task_detail = sub.add_parser("task"); task_detail.add_argument("id", type=int)
@@ -194,7 +216,14 @@ def main():
                 break
             after = data["next_cursor"]
     elif args.command == "status":
-        output(relay.status(args.room, args.sender, args.role, args.state, args.task, args.waiting_for, args.mode, args.last_read_id))
+        _,state=journal(relay,args);binding=state.get("listener",{});interval=binding.get("applied_minutes",1) if args.mode=="scheduled" and args.state in ("waiting","listening") else 1
+        output(relay.status(args.room, args.sender, args.role, args.state, args.task, args.waiting_for, args.mode, args.last_read_id,polling_interval_minutes=interval,next_check_at=int((time.time()+interval*60)*1000) if args.mode=="scheduled" else None,automation_id=binding.get("automation_id")))
+    elif args.command == "listener":
+        path,state=journal(relay,args)
+        if args.automation_id or args.applied_minutes is not None:
+            if not args.automation_id or args.applied_minutes is None:parser.error("record both --automation-id and --applied-minutes only after native scheduler success")
+            state["listener"]={"automation_id":args.automation_id,"thread_id":args.thread_id or state.get("listener",{}).get("thread_id"),"applied_minutes":args.applied_minutes,"confirmed_at":time.time()};save_journal(path,state)
+        output({"event":"listener_binding","listener":state.get("listener"),"cadence":state.get("cadence"),"note":"Local record of the caller-confirmed scheduler result; not a scheduler activation by this script."})
     elif args.command == "agents":
         output(relay.request("/rooms/" + args.room + "/agents"))
     elif args.command == "meta":
@@ -213,6 +242,7 @@ def main():
         output(relay.request(f"/projects/{args.room}/tasks/{args.id}/actions", {"actor":args.sender,"action":args.action,"note":note,"assigned_to":args.assigned_to,"waiting_for":args.waiting_for,"needs_decision":args.needs_owner,"expected_version":task["version"],"client_id":args.client_id or str(uuid.uuid4())}))
     elif args.command in ("join", "sync"):
         path, state = journal(relay, args)
+        pending=[];available=[]
         if args.command == "join":
             try:
                 relay.request("/rooms/" + args.room)
@@ -231,7 +261,8 @@ def main():
         output({"event":"server_state","read_only":bool(meta.get("read_only")),"canonical_url":meta.get("canonical_url",relay.base)})
         if args.command=="join" and meta.get("read_only"):
             raise RuntimeError("Relay is temporarily read-only; resume after migration at "+meta.get("canonical_url",relay.base))
-        if state.get("protocol_version") != meta["protocol_version"]:
+        protocol_changed=state.get("protocol_version") != meta["protocol_version"]
+        if protocol_changed:
             output({"event": "protocol_update", "metadata": meta})
             # A change is read, but only the Codex caller can acknowledge understanding it.
             state["protocol_version"] = meta["protocol_version"]
@@ -249,7 +280,11 @@ def main():
                 if not page["has_more"]: break
                 offset=page["next_offset"]
             output({"event":"my_tasks","tasks":pending})
-        count = sync_history(relay, args.room, path, state)
+            if not meta.get("read_only") and state.get("project_status")=="active" and state.get("member_active"):
+                pool=relay.request("/projects/"+args.room+"/tasks?filter=todo&limit=100")
+                available=[{key:t.get(key) for key in ("id","title","criteria","assigned_to","recommended_to","dispatch_mode","priority","version")} for t in pool["tasks"] if not t["assigned_to"] or t["assigned_to"]==args.sender]
+                output({"event":"available_orders","orders":available,"has_more":pool["has_more"],"instruction":"按真实分工与前置依赖判断；推荐不等于已接单，先原子claim成功再执行。完成本单后继续监听。"})
+        count,relevant = sync_history(relay, args.room, path, state)
         if args.command == "join":
             first_join = not state.get("join_announced")
             if first_join:
@@ -262,6 +297,7 @@ def main():
                 intro=args.intro or ROLES.get(args.role,args.role+"：按项目实际分工协作")
                 output(relay.status(args.room, args.sender, args.role, "waiting", "项目已暂停或归档，等待主人恢复" if state.get("project_status") in ("paused","archived") else "已加入并同步历史；尚未确认定时巡检启用", mode="manual", last_read_id=state["last_read_id"],display_name=args.name or args.sender,responsibility=intro))
                 state["status_registered"]=True;save_journal(path,state)
+        cadence=update_cadence(state,time.time(),activity=relevant or protocol_changed or args.command=="join",working=bool(getattr(args,"active",False) or any(t["status"] in ("todo","claimed","in_progress") for t in pending)),can_work=not meta.get("read_only") and state.get("project_status","active")=="active" and bool(state.get("member_active",1)),available_ids=[t["id"] for t in available]);save_journal(path,state);output(cadence)
         output({"event": "synced", "room": args.room, "sender": args.sender, "last_read_id": state["last_read_id"], "messages_read": count, "state_file": str(path)})
     elif args.command == "watch":
         cursor_path = pathlib.Path(args.cursor_file) if args.cursor_file else None

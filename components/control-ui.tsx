@@ -11,16 +11,17 @@ export function useLive<T>(path:string|null,interval=8000){
   const [data,setData]=useState<T|null>(null),[error,setError]=useState(""),[loading,setLoading]=useState(true),[tick,setTick]=useState(0);
   const previous=useRef<string|null>(null);
   useEffect(()=>{
-    if(!path){setLoading(false);return;}
+    if(!path){setData(null);setError("");setLoading(false);previous.current=null;return;}
     if(previous.current!==path){setData(null);setError("");previous.current=path;}
-    const controller=new AbortController();let stopped=false,busy=false;
-    async function update(first=false){if(stopped||busy||(!first&&document.hidden))return;busy=true;
+    const controller=new AbortController();let stopped=false,busy=false,queued=false;
+    async function update(first=false){if(stopped||(!first&&document.hidden))return;if(busy){queued=true;return;}busy=true;
       try{const value=await controlApi<T>(path!,{signal:controller.signal});if(!stopped){setData(value);setError("");}}
       catch(e:any){if(!stopped&&e.name!=="AbortError"){setError(e.message);if(e.status===401)setData(null);}}
-      finally{busy=false;if(!stopped)setLoading(false);}
+      finally{busy=false;if(!stopped){setLoading(false);if(queued){queued=false;void update();}}}
     }
-    setLoading(true);void update(true);const timer=setInterval(()=>void update(),interval),focus=()=>{if(!document.hidden)void update(true);};window.addEventListener("focus",focus);document.addEventListener("visibilitychange",focus);
-    return()=>{stopped=true;controller.abort();clearInterval(timer);window.removeEventListener("focus",focus);document.removeEventListener("visibilitychange",focus);};
+    const changed=(event:Event)=>{const room=(event as CustomEvent).detail?.room;if(path===`/projects/${room}`||path.startsWith(`/projects/${room}/`)||path.startsWith(`/rooms/${room}/`)||path.startsWith("/projects?"))void update();};
+    setLoading(true);void update(true);const timer=setInterval(()=>void update(),interval),focus=()=>{if(!document.hidden)void update(true);};window.addEventListener("focus",focus);document.addEventListener("visibilitychange",focus);window.addEventListener("relay-room-update",changed);
+    return()=>{stopped=true;controller.abort();clearInterval(timer);window.removeEventListener("focus",focus);document.removeEventListener("visibilitychange",focus);window.removeEventListener("relay-room-update",changed);};
   },[path,tick,interval]);
   return{data,error,loading,reload:()=>setTick(n=>n+1)};
 }
@@ -36,10 +37,10 @@ export function StatusTag({state,label,compact=false}:{state:string;label?:strin
 export function Metric({label,value,icon,active,onClick}:{label:string;value:number;icon:ReactNode;active?:boolean;onClick?:()=>void}){
   return <button className={"control-metric"+(active?" selected":"")} onClick={onClick}><span className="metric-icon">{icon}</span><span><strong>{value}</strong><small>{label}</small></span></button>;
 }
-export function ControlDialog({title,subtitle,children,onClose,wide=false}:{title:string;subtitle?:string;children:ReactNode;onClose:()=>void;wide?:boolean}){
+export function ControlDialog({title,subtitle,children,onClose,wide=false,className=""}:{title:string;subtitle?:string;children:ReactNode;onClose:()=>void;wide?:boolean;className?:string}){
   const ref=useRef<HTMLDialogElement>(null),close=useRef(onClose);close.current=onClose;
   useEffect(()=>{const dialog=ref.current;dialog?.showModal();return()=>{if(dialog?.open)dialog.close();};},[]);
-  return <dialog ref={ref} className={"control-dialog"+(wide?" wide":"")} aria-label={title} onCancel={e=>{e.preventDefault();close.current();}} onClick={e=>{if(e.target===e.currentTarget)close.current();}}>
+  return <dialog ref={ref} className={"control-dialog"+(wide?" wide":"")+" "+className} aria-label={title} onCancel={e=>{e.preventDefault();close.current();}} onClick={e=>{if(e.target===e.currentTarget)close.current();}}>
     <div className="control-dialog-head"><div><h2>{title}</h2>{subtitle&&<p>{subtitle}</p>}</div><button className="control-icon" onClick={()=>close.current()} aria-label="关闭"><X size={20}/></button></div>{children}
   </dialog>;
 }

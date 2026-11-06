@@ -20,6 +20,7 @@ export const agents = sqliteTable("agents", {
   state: text("state").notNull(), task: text("task").notNull().default(""),
   waitingFor: text("waiting_for"), mode: text("mode").notNull().default("manual"),
   lastReadId: integer("last_read_id").notNull().default(0),
+  pollingIntervalMinutes:integer("polling_interval_minutes").notNull().default(1),nextCheckAt:integer("next_check_at"),automationId:text("automation_id"),
   updatedAt: integer("updated_at").notNull(),
 }, (t) => [index("agents_room").on(t.roomId)]);
 export const projectSettings = sqliteTable("project_settings", {
@@ -53,3 +54,31 @@ export const projectMembers = sqliteTable("project_members", {
   responsibility: text("responsibility").notNull().default(""), active: integer("active").notNull().default(1),
   createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
 }, (t) => [index("project_members_room").on(t.roomId)]);
+
+export const intakeSessions = sqliteTable("intake_sessions", {
+  id: text("id").primaryKey(),roomId:text("room_id").notNull().references(()=>rooms.id),
+  status:text("status").notNull().default("draft"),version:integer("version").notNull().default(0),
+  proposalJson:text("proposal_json").notNull().default("{}"),error:text("error").notNull().default(""),
+  currentJobId:text("current_job_id"),dispatchKey:text("dispatch_key"),
+  createdAt:integer("created_at").notNull(),updatedAt:integer("updated_at").notNull(),
+},t=>[index("intake_sessions_room").on(t.roomId,t.updatedAt)]);
+export const intakeTurns = sqliteTable("intake_turns", {
+  id:integer("id").primaryKey({autoIncrement:true}),sessionId:text("session_id").notNull().references(()=>intakeSessions.id),
+  roomId:text("room_id").notNull().references(()=>rooms.id),role:text("role").notNull(),content:text("content").notNull(),
+  createdAt:integer("created_at").notNull(),
+},t=>[index("intake_turns_session").on(t.sessionId,t.id)]);
+export const intakeJobs = sqliteTable("intake_jobs", {
+  id:text("id").primaryKey(),sessionId:text("session_id").notNull().references(()=>intakeSessions.id),roomId:text("room_id").notNull().references(()=>rooms.id),
+  clientId:text("client_id").notNull(),requestText:text("request_text").notNull(),status:text("status").notNull().default("queued"),
+  resultJson:text("result_json").notNull().default("{}"),error:text("error").notNull().default(""),
+  createdAt:integer("created_at").notNull(),updatedAt:integer("updated_at").notNull(),
+},t=>[uniqueIndex("intake_jobs_request").on(t.sessionId,t.clientId),index("intake_jobs_queue").on(t.status,t.createdAt)]);
+export const orderDetails=sqliteTable("order_details",{
+  taskId:integer("task_id").primaryKey().references(()=>tasks.id),roomId:text("room_id").notNull().references(()=>rooms.id),
+  recommendedTo:text("recommended_to"),dispatchMode:text("dispatch_mode").notNull().default("pool"),createdAt:integer("created_at").notNull(),
+});
+export const orderReviews=sqliteTable("order_reviews",{
+  taskId:integer("task_id").primaryKey().references(()=>tasks.id),roomId:text("room_id").notNull().references(()=>rooms.id),
+  reviewer:text("reviewer").notNull(),assignee:text("assignee").notNull(),stars:integer("stars").notNull(),comment:text("comment").notNull().default(""),
+  clientId:text("client_id").notNull(),version:integer("version").notNull().default(1),createdAt:integer("created_at").notNull(),updatedAt:integer("updated_at").notNull(),
+},t=>[index("order_reviews_member").on(t.roomId,t.assignee)]);

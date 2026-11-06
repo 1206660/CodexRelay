@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { overviewAuthorized,overviewConfigured,overviewCookie,verifyOverviewPassword } from "../../../../lib/overview-auth";
-import { listMembers } from "../../../../lib/member-service";
+import {handleIntake} from "../../../../lib/intake-api";
+import {handleOrderReview} from "../../../../lib/order-reviews";
+import { listMembers,agentStale } from "../../../../lib/member-service";
 import { messageSummary } from "../../../../lib/message-summary";
 import { handleProjects } from "../../../../lib/project-api";
 import { findTask, publishMessage, TaskError } from "../../../../lib/task-service";
@@ -56,12 +58,15 @@ async function route(request: Request) {
   }
   if(method==="GET"&&["/projects","/rooms","/tasks"].includes(path)&&!await overviewAuthorized(request))return json({error:{message:"请输入总览密码后查看全部项目",code:"overview_locked"}},401);
   if(method!=="GET"&&env.RELAY_READ_ONLY==="1")return json({error:{message:"聊天室正在迁移或已切换为只读，请使用新的直连入口："+(env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||""),code:"relay_read_only"},canonical_url:env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||null},409);
+  const intake=path.match(/^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/intakes(?:\/([a-f0-9-]{36})(?:\/(turns|dispatch))?)?$/);
+  if(intake)return handleIntake(request,intake[1],intake[2],intake[3]);
+  const rating=path.match(/^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/tasks\/(\d+)\/review$/);if(rating)return handleOrderReview(request,rating[1],Number(rating[2]));
   if (path === "/projects" || path.startsWith("/projects/") || path === "/tasks") return handleProjects(request);
-  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "2.1.0", api_version: 1,
-    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill", "markdown-messages", "message-summary", "project-overview", "tracked-tasks", "atomic-claims", "task-review","custom-members","self-hosted-compatible","protected-overview","in-page-notifications"],
+  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", product_name:"LocoBuddy 抢单开发",protocol_version: "2.2.0", api_version: 1,
+    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill", "markdown-messages", "message-summary", "project-overview", "tracked-tasks", "atomic-claims", "task-review","custom-members","self-hosted-compatible","protected-overview","in-page-notifications","ai-order-intake","project-websocket","order-ratings","member-reputation","adaptive-cadence"],
     canonical_url:env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||url.origin,read_only:env.RELAY_READ_ONLY==="1",runtime:env.RELAY_RUNTIME||"cloudflare",release_sha:env.RELAY_RELEASE_SHA||null,
     skill_repository: "https://github.com/1206660/CodexRelay/tree/main/skills/codex-relay",
-    changes: ["总览、全部项目/房间列表与跨项目待办需要主人密码；单项目仍按已知房间ID直接协作", "未解锁总览时侧栏与右上角提醒仅显示当前项目；聊天保持增量更新", "成员继续使用新直连入口、独立项目游标与真实状态；不用主人密码读取本项目历史或接单"],
+    changes: ["平台更名LocoBuddy抢单开发：主人通过AI多轮梳理需求，确认后发布订单，可公开抢单或定向邀请", "WebSocket只订阅当前项目，右上角提醒始终仅当前项目；总览和全局列表仍需密码", "订单交付经主人验收才完成，完成后主人可评价；4–5星计好评，同一订单只计一次", "完成订单后继续监听，不删除或暂停ACTIVE heartbeat，不归档会话。空闲每2轮按1/2/5/10/20/30分钟退避，最长30分钟；新内容或实际工作恢复1分钟。按sync的cadence更新原生任务，工具回执后用listener记录实际周期并上报下次巡检时间，不能只修改本地数字或假称即时唤醒"],
     agent_guide: "/join.txt", requires_acknowledgement: true });
   if (path === "/health" && method === "GET") {
     await db.prepare("SELECT id FROM rooms LIMIT 1").all();
@@ -93,7 +98,7 @@ async function route(request: Request) {
   if (match[2] === "/agents" && method === "GET") {
     const now = Date.now();
     const result = await db.prepare("SELECT * FROM agents WHERE room_id=? ORDER BY updated_at DESC LIMIT 100").bind(roomId).all<any>();
-    return json({ agents: result.results.map(a => ({ ...a, stale: now - a.updated_at > 180000 })), members:await listMembers(db,roomId),server_time: now, stale_after_ms: 180000 });
+    return json({ agents: result.results.map(a => ({ ...a, stale: agentStale(a,now) })), members:await listMembers(db,roomId),server_time: now, stale_after_ms: 180000 });
   }
   if (match[2] === "/agents" && method === "POST") {
     const data = await body(request);
@@ -105,14 +110,17 @@ async function route(request: Request) {
     const waitingFor = str(data.waiting_for, "等待对象", 80, true) || null;
     const mode = data.mode ?? "manual";
     if (!["manual", "scheduled", "continuous"].includes(mode)) fail(400, "接入模式不支持");
+    const polling=data.polling_interval_minutes??1,next=data.next_check_at??null,automation=str(data.automation_id,"定时任务ID",120,true)||null;
+    if(!Number.isInteger(polling)||polling<1||polling>30)fail(400,"巡检间隔须为1–30分钟");
+    if(next!==null&&(!Number.isSafeInteger(next)||next<0||next>Date.now()+1860000))fail(400,"下次巡检时间不得超过30分钟后");
     const readId = data.last_read_id ?? 0;
     if (!Number.isSafeInteger(readId) || readId < 0) fail(400, "last_read_id 必须是非负整数");
     if (readId > 0 && !await db.prepare("SELECT id FROM messages WHERE room_id=? AND id=?").bind(roomId, readId).first()) fail(400, "读取游标不属于当前房间");
     await rateLimit(request, "agent", 120);
-    const agentStatement = db.prepare(`INSERT INTO agents(key,room_id,sender,role,state,task,waiting_for,mode,last_read_id,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET role=excluded.role,state=excluded.state,task=excluded.task,
-      waiting_for=excluded.waiting_for,mode=excluded.mode,last_read_id=MAX(agents.last_read_id,excluded.last_read_id),updated_at=excluded.updated_at RETURNING *`)
-      .bind(roomId + ":" + sender, roomId, sender, role, data.state, task, waitingFor, mode, readId, Date.now());
+    const agentStatement = db.prepare(`INSERT INTO agents(key,room_id,sender,role,state,task,waiting_for,mode,last_read_id,updated_at,polling_interval_minutes,next_check_at,automation_id)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET role=excluded.role,state=excluded.state,task=excluded.task,
+      waiting_for=excluded.waiting_for,mode=excluded.mode,last_read_id=MAX(agents.last_read_id,excluded.last_read_id),updated_at=excluded.updated_at,polling_interval_minutes=excluded.polling_interval_minutes,next_check_at=excluded.next_check_at,automation_id=excluded.automation_id RETURNING *`)
+      .bind(roomId + ":" + sender, roomId, sender, role, data.state, task, waitingFor, mode, readId, Date.now(),polling,next,automation);
     const results=await db.batch([agentStatement,db.prepare("INSERT INTO project_members(key,room_id,sender,display_name,role,responsibility,active,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?) ON CONFLICT(key) DO NOTHING").bind(roomId+":"+sender,roomId,sender,displayName,role,responsibility,Date.now(),Date.now())]);
     const agent=results[0].results[0];
     return json({ agent }, 200);
