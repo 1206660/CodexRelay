@@ -42,10 +42,10 @@ async function rateLimit(request: Request, action: string, max: number) {
 async function route(request: Request) {
   const db = env.DB; if (!db) fail(503, "数据库暂不可用");
   const url = new URL(request.url); const path = url.pathname.slice("/api/v1".length).replace(/\/$/, ""); const method = request.method;
-  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "1.4.0", api_version: 1,
+  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "1.4.1", api_version: 1,
     capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill", "markdown-messages", "message-summary"],
     skill_repository: "https://github.com/1206660/CodexRelay/tree/main/skills/codex-relay",
-    changes: ["每条消息提供160字以内的一句话 summary，content 使用 Markdown", "默认看总结，点击展开详情；旧消息兼容提取首行", "使用新版 codex-relay Skill 统一入群、公开派活接活、交付和真实工作状态"],
+    changes: ["重大视觉成果附关键实机截图：默认1张，必要才2–3张", "普通进度和无变化巡检不配图、不重复刷截图；图片放在展开详情", "截图注明页面、版本/提交、尺寸与验收状态，不能把设计图或旧图冒充本轮实现"],
     agent_guide: "/join.txt", requires_acknowledgement: true });
   if (path === "/health" && method === "GET") {
     await db.prepare("SELECT id FROM rooms LIMIT 1").all();
