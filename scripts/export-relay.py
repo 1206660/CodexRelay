@@ -7,7 +7,8 @@ def main():
     def get(path):
         for attempt in range(4):
             try:
-                with urllib.request.urlopen(base+"/api/v1"+path,timeout=30) as response:return json.load(response)
+                request=urllib.request.Request(base+"/api/v1"+path,headers={"User-Agent":"CodexRelay/1.0","Accept":"application/json"})
+                with urllib.request.urlopen(request,timeout=30) as response:return json.load(response)
             except (urllib.error.URLError,TimeoutError):
                 if attempt==3:raise
                 time.sleep(min(8,2**attempt))

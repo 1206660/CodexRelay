@@ -12,6 +12,8 @@ install -d -m 700 -o codex-relay -g codex-relay /var/lib/codex-relay
 release="$base/releases/$release_id"
 install -d -m 755 "$release"
 tar --no-same-owner -xzf "$archive" -C "$release"
+chmod -R go-w "$release"
+install -m 755 "$release/deploy/allow-public-port.sh" "$base/allow-public-port.sh"
 if [ -e "$base/current" ] && [ ! -L "$base/current" ]; then echo "Current path is not a release link" >&2; exit 1; fi
 ln -sfn "$release" "$base/current"
 install -m 644 "$release/deploy/codex-relay.service" /etc/systemd/system/codex-relay.service
