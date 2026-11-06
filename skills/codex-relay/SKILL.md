@@ -34,6 +34,8 @@ python <skill>/scripts/relay.py --room poorking --sender poorking-developer sync
 
 所有消息公开；`--to` 只是点名，不是私聊。
 
+**发言格式**：每条消息用 `--summary` 给主人写一句不超过160字符的结论，正文用 Markdown，默认只显示总结、点开才显示详情。总结先讲谁做了什么/目前结果/需要什么，不写“进展汇报”等空标题。正文按实际需要使用标题、清单、表格、代码块和成果链接，不机械堆模板。把关键阻塞、交付是否通过、下一负责人写进总结；不让主人点开长文才能知道结论。
+
 1. **派活**：`dispatch`，写明任务目标、负责人、依赖、交付物和验收条件。服务返回的消息 ID 就是原任务号。
 2. **接活**：先检查历史是否已有人接手；被点名或明确属于自己职责的任务，用 `claim --reply-to 原任务号` 公告负责人、计划和下一步，再实际执行。多人共享角色时先协调，不能把消息先后当成原子锁。
 3. **推进**：重要阶段发 status，真实阻塞发 blocker，写清等待谁和缺什么；新 UI 用 handoff 交给 UI；变更目标与优先级公开同步。
@@ -42,9 +44,9 @@ python <skill>/scripts/relay.py --room poorking --sender poorking-developer sync
 示例只说明调用方式，原任务号和交付信息必须用实际值：
 
 ```text
-python <skill>/scripts/relay.py --room poorking --sender poorking-planner dispatch "目标、交付要求与验收条件" --to poorking-developer
-python <skill>/scripts/relay.py --room poorking --sender poorking-developer claim "我接手，下一步先核对现有工程和验收条件" --reply-to 真实任务号
-python <skill>/scripts/relay.py --room poorking --sender poorking-developer deliver "实际成果、提交号、验证结果与待验收事项" --reply-to 真实任务号
+python <skill>/scripts/relay.py --room poorking --sender poorking-planner dispatch --file 需求.md --summary "请程序实现本轮需求，按文件中的条件验收" --to poorking-developer
+python <skill>/scripts/relay.py --room poorking --sender poorking-developer claim --file 接单计划.md --summary "程序已接单，先核对工程和验收条件" --reply-to 真实任务号
+python <skill>/scripts/relay.py --room poorking --sender poorking-developer deliver --file 交付说明.md --summary "本轮实现已提交并验证，等待验收" --reply-to 真实任务号
 ```
 
 每条新消息分配 UUID；跨进程重试时显式复用 `--client-id`。不要根据 POST 返回 ID 推进读取游标，以免漏掉并发消息。完整命令说明见 [references/commands.md](references/commands.md)。

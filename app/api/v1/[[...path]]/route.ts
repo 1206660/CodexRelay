@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { validRole } from "../../../../lib/agent-guide";
+import { messageSummary } from "../../../../lib/message-summary";
 export const dynamic = "force-dynamic";
 const KINDS = ["message", "status", "decision", "blocker", "handoff", "task", "claim", "result"];
 class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
@@ -41,10 +42,10 @@ async function rateLimit(request: Request, action: string, max: number) {
 async function route(request: Request) {
   const db = env.DB; if (!db) fail(503, "数据库暂不可用");
   const url = new URL(request.url); const path = url.pathname.slice("/api/v1".length).replace(/\/$/, ""); const method = request.method;
-  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "1.3.0", api_version: 1,
-    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill"],
+  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "1.4.0", api_version: 1,
+    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill", "markdown-messages", "message-summary"],
     skill_repository: "https://github.com/1206660/CodexRelay/tree/main/skills/codex-relay",
-    changes: ["新增真实工作状态与过期提示", "新增派活、接活、交付标签，所有交接全群可见", "推荐 codex-relay 技能统一接入与定时协作配置"],
+    changes: ["每条消息提供160字以内的一句话 summary，content 使用 Markdown", "默认看总结，点击展开详情；旧消息兼容提取首行", "使用新版 codex-relay Skill 统一入群、公开派活接活、交付和真实工作状态"],
     agent_guide: "/join.txt", requires_acknowledgement: true });
   if (path === "/health" && method === "GET") {
     await db.prepare("SELECT id FROM rooms LIMIT 1").all();
@@ -110,6 +111,7 @@ async function route(request: Request) {
   }
   if (match[2] === "/messages" && method === "POST") {
     const data = await body(request); const sender = str(data.sender, "发送者", 80); const content = str(data.content, "消息", 16000);
+    const summary = str(data.summary, "一句话总结", 160, true).replace(/\s+/g, " ") || messageSummary(content);
     const kind = data.kind ?? "message"; if (!KINDS.includes(kind)) fail(400, "消息类型不支持");
     const recipient = str(data.recipient, "接收者", 80, true) || null; const clientId = str(data.client_id, "client_id", 128); const replyTo = data.reply_to ?? null;
     if (replyTo !== null) {
@@ -117,11 +119,11 @@ async function route(request: Request) {
       if (!await db.prepare("SELECT id FROM messages WHERE id=? AND room_id=?").bind(replyTo, roomId).first()) fail(400, "被回复消息不在当前房间");
     }
     const existing = await db.prepare("SELECT * FROM messages WHERE room_id=? AND sender=? AND client_id=?").bind(roomId, sender, clientId).first<any>();
-    const same = (m: any) => m.content === content && m.kind === kind && m.recipient === recipient && m.reply_to === replyTo;
+    const same = (m: any) => m.content === content && m.kind === kind && m.recipient === recipient && m.reply_to === replyTo && (data.summary === undefined || m.summary === summary);
     if (existing) { if (!same(existing)) fail(409, "client_id 已用于其他内容"); return json({ message: existing, deduplicated: true }); }
     await rateLimit(request, "message", 60);
-    const inserted = await db.prepare(`INSERT INTO messages(room_id,sender,content,kind,recipient,reply_to,client_id,created_at)
-      VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(room_id,sender,client_id) DO NOTHING RETURNING *`).bind(roomId, sender, content, kind, recipient, replyTo, clientId, Date.now()).first<any>();
+    const inserted = await db.prepare(`INSERT INTO messages(room_id,sender,content,summary,kind,recipient,reply_to,client_id,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(room_id,sender,client_id) DO NOTHING RETURNING *`).bind(roomId, sender, content, summary, kind, recipient, replyTo, clientId, Date.now()).first<any>();
     const message = inserted ?? await db.prepare("SELECT * FROM messages WHERE room_id=? AND sender=? AND client_id=?").bind(roomId, sender, clientId).first<any>();
     if (!same(message)) fail(409, "client_id 已用于其他内容"); return json({ message, deduplicated: !inserted }, inserted ? 201 : 200);
   }

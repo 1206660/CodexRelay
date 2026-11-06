@@ -53,6 +53,23 @@ def main():
     assert len(older["messages"]) == 5
     assert all(m["id"] < newest["oldest_cursor"] for m in older["messages"])
     assert a.history(room, after=cursor)["messages"] == []
+    markdown = "## 已完成\n\n- [x] 接口验证\n\n| 项目 | 结果 |\n| --- | --- |\n| 分页 | 通过 |\n\n```python\nprint('ok')\n```"
+    summarized = a.send(room, "codex-a", markdown, summary="接口验证通过，等待验收", client_id="markdown-summary")["message"]
+    assert summarized["summary"] == "接口验证通过，等待验收"
+    assert summarized["content"] == markdown
+    assert a.send(room, "codex-a", markdown, summary="接口验证通过，等待验收", client_id="markdown-summary")["deduplicated"]
+    try:
+        a.send(room, "codex-a", markdown, summary="另一种总结", client_id="markdown-summary")
+        raise AssertionError("different summary accepted for same idempotency key")
+    except RuntimeError as exc:
+        assert "409" in str(exc)
+    fallback = a.send(room, "codex-a", "## 旧客户端首行\n\n详细正文")["message"]
+    assert fallback["summary"] == "旧客户端首行"
+    try:
+        a.send(room, "codex-a", "正文", summary="超" * 161)
+        raise AssertionError("oversized summary accepted")
+    except RuntimeError as exc:
+        assert "400" in str(exc)
     assert a.request(f"/rooms/{room}/agents")["agents"] == []
     reported = a.status(room, "codex-a", "developer", "working", "Integration test", mode="manual", last_read_id=first["id"])["agent"]
     assert reported["last_read_id"] == first["id"]

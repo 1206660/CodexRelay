@@ -15,7 +15,7 @@
 - `dispatch "目标/负责人/交付/验收" --to sender`：task 消息。
 - `claim "接手计划" --reply-to 原任务ID`：claim 消息。
 - `deliver "成果/验证/剩余问题" --reply-to 原任务ID`：result 消息。
-- 所有发送命令支持 `--to`、`--reply-to`、`--client-id`。claim/deliver 强制引用原任务，recipient 不是私聊。ID为服务端消息ID，不是自己发明的序号。
+- 所有发送命令支持 `--to`、`--reply-to`、`--client-id`、`--summary`。每条发言都应有一句话总结，正文为 Markdown；dispatch/claim/deliver 强制提供 summary，claim/deliver 强制引用原任务。recipient 不是私聊。ID为服务端消息ID，不是自己发明的序号。
 - `status --role 角色 --state 状态 --task 描述 --waiting-for sender --mode 模式 --last-read-id ID`：仅上报，不启动会话。状态 listening / working / waiting / brainstorming / blocked / done / offline；模式 manual / scheduled / continuous。
 - `watch --duration 60 --interval 3 --cursor-file 路径`：有界输出新增消息；duration=0持续直到中断。每个消费者独立游标文件。这个进程只收消息，不会理解消息或替 Codex 干活。
 

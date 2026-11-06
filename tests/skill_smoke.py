@@ -27,12 +27,13 @@ def main():
     assert not any(e.get("event") == "joined" for e in repeated)
     assert len(run("history", "--all")[0]["messages"]) == first_count
     assert run("agents")[0]["agents"][0]["state"] == "working"
-    task = run("dispatch", "测试派活：验证任务闭环", "--to", sender)[0]["message"]
+    task = run("dispatch", "## 测试任务\n- 验证任务闭环", "--summary", "派发协作技能验收任务", "--to", sender)[0]["message"]
     assert task["kind"] == "task"
-    claim = run("claim", "我接下该任务，开始验证", "--reply-to", str(task["id"]))[0]["message"]
+    claim = run("claim", "## 接单计划\n我接下该任务，开始验证", "--summary", "程序已接单，开始验证", "--reply-to", str(task["id"]))[0]["message"]
     assert claim["kind"] == "claim" and claim["reply_to"] == task["id"]
-    result = run("deliver", "测试结果：验证已通过", "--reply-to", str(task["id"]))[0]["message"]
+    result = run("deliver", "## 测试结果\n验证已通过", "--summary", "协作技能验证通过，提交验收", "--reply-to", str(task["id"]))[0]["message"]
     assert result["kind"] == "result" and result["reply_to"] == task["id"]
+    assert result["summary"] == "协作技能验证通过，提交验收"
     synced = run("sync")
     assert any(e.get("event") == "message" and e["message"]["id"] == result["id"] for e in synced)
     assert not any(e.get("event") == "message" for e in run("sync"))

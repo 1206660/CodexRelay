@@ -54,11 +54,12 @@ class Relay:
             params["before"] = before
         return self.request("/rooms/" + urllib.parse.quote(room, safe="") + "/messages?" + urllib.parse.urlencode(params))
 
-    def send(self, room, sender, content, kind="message", recipient=None, reply_to=None, client_id=None):
+    def send(self, room, sender, content, kind="message", recipient=None, reply_to=None, client_id=None, summary=None):
         # A single ID survives all HTTP retries of this call.
         return self.request("/rooms/" + urllib.parse.quote(room, safe="") + "/messages", {
             "sender": sender, "content": content, "kind": kind, "recipient": recipient,
             "reply_to": reply_to, "client_id": client_id or str(uuid.uuid4()),
+            **({"summary": summary} if summary is not None else {}),
         })
 
     def status(self, room, sender, role, state, task="", waiting_for=None, mode="manual", last_read_id=0):
@@ -120,6 +121,7 @@ def main():
     send = sub.add_parser("send", aliases=["dispatch", "claim", "deliver"]); send.add_argument("content", nargs="?"); send.add_argument("--file", help="UTF-8 message text file")
     send.add_argument("--kind", default="message", choices=["message", "status", "decision", "blocker", "handoff", "task", "claim", "result"])
     send.add_argument("--to"); send.add_argument("--reply-to", type=int); send.add_argument("--client-id")
+    send.add_argument("--summary", help="One-sentence plain-text conclusion, at most 160 characters")
     history = sub.add_parser("history"); group = history.add_mutually_exclusive_group()
     group.add_argument("--after", type=int); group.add_argument("--before", type=int)
     history.add_argument("--limit", type=int, default=100); history.add_argument("--all", action="store_true")
@@ -149,8 +151,10 @@ def main():
         content = pathlib.Path(args.file).read_text(encoding="utf-8-sig") if args.file else args.content
         if args.command in ("claim", "deliver") and args.reply_to is None:
             parser.error("claim and deliver require --reply-to with the original task message ID")
+        if args.command in ("dispatch", "claim", "deliver") and not args.summary:
+            parser.error("dispatch, claim and deliver require --summary with a one-sentence conclusion")
         kind = {"dispatch": "task", "claim": "claim", "deliver": "result"}.get(args.command, args.kind)
-        output(relay.send(args.room, args.sender, content, kind, args.to, args.reply_to, args.client_id))
+        output(relay.send(args.room, args.sender, content, kind, args.to, args.reply_to, args.client_id, args.summary))
     elif args.command == "history":
         if args.all and (args.after is not None or args.before is not None):
             parser.error("--all cannot be combined with --after or --before")
@@ -196,7 +200,7 @@ def main():
             first_join = not state.get("join_announced")
             if first_join:
                 intro = args.intro or ROLES[args.role]
-                message = relay.send(args.room, args.sender, f"我是谁：{args.sender}\n负责什么：{intro}\n当前状态：已读取历史，准备按项目现有规则参与协作。\n协作方式：公开派活、接活、进展、阻塞和交付；点名消息仍然全群可见。", "status", client_id=state["join_id"])
+                message = relay.send(args.room, args.sender, f"## 身份与职责\n- **我是谁**：{args.sender}\n- **负责什么**：{intro}\n\n## 当前状态\n已读取历史，准备按项目现有规则参与协作。\n\n## 协作方式\n公开派活、接活、进展、阻塞和交付；点名消息仍然全群可见。", "status", client_id=state["join_id"], summary=f"{args.sender} 已入群，已说明职责并读取历史，准备接续协作。")
                 state["join_announced"] = True
                 save_journal(path, state)
                 output({"event": "joined", "message": message["message"]})

@@ -6,7 +6,7 @@ export const rooms = sqliteTable("rooms", {
 export const messages = sqliteTable("messages", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roomId: text("room_id").notNull().references(() => rooms.id), sender: text("sender").notNull(),
-  content: text("content").notNull(), kind: text("kind").notNull().default("message"),
+  content: text("content").notNull(), summary: text("summary").notNull().default(""), kind: text("kind").notNull().default("message"),
   recipient: text("recipient"), replyTo: integer("reply_to"), clientId: text("client_id").notNull(),
   createdAt: integer("created_at").notNull(),
 }, (t) => [index("messages_room_cursor").on(t.roomId, t.id), uniqueIndex("messages_idempotency").on(t.roomId, t.sender, t.clientId)]);

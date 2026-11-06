@@ -4,9 +4,10 @@ import { ArrowUpRight, ArrowDown, Check, ChevronDown, Code2, Copy, Download, Has
 import GuideInvite from "../components/guide-invite";
 import { DEFAULT_ROOM, ROLES, senderFor, guidePath, inviteText } from "../lib/agent-guide";
 import AgentStatus from "../components/agent-status";
+import MessageBody from "../components/message-body";
 
 type Room = { id: string; title: string; description: string; message_count?: number; updated_at?: number };
-type Message = { id: number; room_id: string; sender: string; content: string; kind: string; recipient: string | null; reply_to: number | null; created_at: number };
+type Message = { id: number; room_id: string; sender: string; content: string; summary?: string; kind: string; recipient: string | null; reply_to: number | null; created_at: number };
 const labels: Record<string, string> = { message: "消息", task: "派活", claim: "接活", status: "进展", decision: "决策", blocker: "阻塞", handoff: "交接", result: "交付" };
 async function api(path: string, init?: RequestInit) {
   const response = await fetch("/api/v1" + path, init);
@@ -21,6 +22,7 @@ export default function Relay() {
   const [loading, setLoading] = useState(false), [listLoading, setListLoading] = useState(true), [error, setError] = useState("");
   const [query, setQuery] = useState(""), [moreRooms, setMoreRooms] = useState(false);
   const [name, setName] = useState(""), [draft, setDraft] = useState(""), [recipient, setRecipient] = useState(""), [kind, setKind] = useState("message");
+  const [draftSummary, setDraftSummary] = useState("");
   const [reply, setReply] = useState<Message | null>(null), [sending, setSending] = useState(false), [sync, setSync] = useState("等待连接");
   const [modal, setModal] = useState<"create" | "connect" | null>(null), [mobile, setMobile] = useState(false), [toast, setToast] = useState("");
   const [formError, setFormError] = useState(""), [creating, setCreating] = useState(false), [exporting, setExporting] = useState(false);
@@ -44,7 +46,7 @@ export default function Relay() {
   }, [query]);
   function choose(room: Room) {
     selectedRef.current = room.id; cursor.current = 0; pending.current = null;
-    setSelected(room); setDraft(""); setReply(null); setMobile(false); setUnseen(false); setMessages([]); setError(""); nearBottom.current = true;
+    setSelected(room); setDraft(""); setDraftSummary(""); setReply(null); setMobile(false); setUnseen(false); setMessages([]); setError(""); nearBottom.current = true;
     history.replaceState(null, "", "?room=" + encodeURIComponent(room.id));
   }
   function ownerMode() {
@@ -114,14 +116,14 @@ export default function Relay() {
   }
   async function send(event?: FormEvent) {
     event?.preventDefault(); if (!selected || !draft.trim() || !name.trim() || sendLock.current) return;
-    const id = selected.id; const payload = JSON.stringify({ sender: name.trim(), content: draft.trim(), kind, recipient: recipient.trim() || null, reply_to: reply?.id ?? null });
+    const id = selected.id; const payload = JSON.stringify({ sender: name.trim(), content: draft.trim(), summary: draftSummary.trim() || undefined, kind, recipient: recipient.trim() || null, reply_to: reply?.id ?? null });
     if (pending.current?.payload !== payload) pending.current = { key: crypto.randomUUID(), payload };
     sendLock.current = true; setSending(true); setError("");
     try { const d = await api(`/rooms/${id}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...JSON.parse(payload), client_id: pending.current.key }) });
       if (selectedRef.current !== id) return;
       setMessages(old => old.some(m => m.id === d.message.id) ? old : [...old, d.message].sort((a, b) => a.id - b.id));
       // Cursor advances only from ordered reads, preventing a concurrent message from being skipped.
-      setDraft(""); setReply(null); pending.current = null; bottom(); inputRef.current?.focus(); void refreshRooms().catch(() => {});
+      setDraft(""); setDraftSummary(""); setReply(null); pending.current = null; bottom(); inputRef.current?.focus(); void refreshRooms().catch(() => {});
     } catch (e: any) { if (selectedRef.current === id) setError(e.message + "；内容已保留，可重试"); }
     finally { sendLock.current = false; setSending(false); }
   }
@@ -165,12 +167,12 @@ export default function Relay() {
           {loading && !messages.length && <p className="empty-small">正在读取历史…</p>}
           {!loading && !messages.length && <div className="empty-conversation"><span className="empty-icon"><MessageSquare size={26}/></span><h2>这个任务，从第一条消息开始</h2><p>写下目标、进展或需要交接的内容。<br/>后续加入的 Codex 可以从历史继续。</p><button className="text-button" onClick={() => { setDraft("任务目标：\n当前进展：\n下一步："); inputRef.current?.focus(); }}>写一份任务简报 <ArrowUpRight size={15}/></button></div>}
           {messages.length > 0 && <div className="history-note"><span/>消息历史 · 服务端保存<span/></div>}
-          {messages.map((m, i) => <article className={`message ${m.kind}`} key={m.id}><div className={`avatar tone-${Math.abs([...m.sender].reduce((a, c) => a + c.charCodeAt(0), 0)) % 4}`}>{m.sender.slice(0, 2).toUpperCase()}</div><div className="message-main"><div className="message-meta"><strong>{m.sender}</strong><span className={`kind kind-${m.kind}`}>{labels[m.kind]}</span>{m.sender === selected.id.slice(0, 60) + "-owner" && <span className="owner-badge">主人</span>}{m.recipient && <span className="recipient">→ {m.recipient}</span>}<time dateTime={new Date(m.created_at).toISOString()}>{stamp(m.created_at)}</time><span className="sequence">#{m.id}</span></div>{m.reply_to && <div className="reply-reference">↳ 回复 #{m.reply_to}</div>}<p className="message-content">{m.content}</p><button className="reply-button" onClick={() => { setReply(m); inputRef.current?.focus(); }}>回复</button></div></article>)}
+          {messages.map((m, i) => <article className={`message ${m.kind}`} key={m.id}><div className={`avatar tone-${Math.abs([...m.sender].reduce((a, c) => a + c.charCodeAt(0), 0)) % 4}`}>{m.sender.slice(0, 2).toUpperCase()}</div><div className="message-main"><div className="message-meta"><strong>{m.sender}</strong><span className={`kind kind-${m.kind}`}>{labels[m.kind]}</span>{m.sender === selected.id.slice(0, 60) + "-owner" && <span className="owner-badge">主人</span>}{m.recipient && <span className="recipient">→ {m.recipient}</span>}<time dateTime={new Date(m.created_at).toISOString()}>{stamp(m.created_at)}</time><span className="sequence">#{m.id}</span></div>{m.reply_to && <div className="reply-reference">↳ 回复 #{m.reply_to}</div>}<MessageBody content={m.content} summary={m.summary}/><button className="reply-button" onClick={() => { setReply(m); inputRef.current?.focus(); }}>回复</button></div></article>)}
         </div>
         {unseen && <button className="new-messages" onClick={bottom}><ArrowDown size={15}/>有新消息 · 跳到最新</button>}
         <form className="composer-wrap" onSubmit={send}>
           {reply && <div className="replying">回复 #{reply.id} · {reply.sender}<button type="button" className="icon" aria-label="取消回复" onClick={() => setReply(null)}><X size={14}/></button></div>}
-          <div className="composer"><textarea ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)} maxLength={16000} disabled={sending} placeholder="同步进展，或把下一步交给另一位 Codex…" aria-label="消息内容" onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }}/><div className="composer-tools"><div className="composer-inputs"><label>发送者<input value={name} onChange={e => setName(e.target.value)} disabled={sending} maxLength={80} placeholder="例如 codex-a" aria-label="发送者名称" required/></label><select aria-label="消息类型" value={kind} onChange={e => setKind(e.target.value)} disabled={sending}>{Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>{name === selected.id.slice(0, 60) + "-owner" && <select aria-label="发给负责人" value={recipient} disabled={sending} onChange={e => setRecipient(e.target.value)}><option value="">全体</option>{Object.entries(ROLES).map(([role, info]) => <option key={role} value={senderFor(selected.id, role as keyof typeof ROLES)}>{info.label}</option>)}{recipient && !Object.keys(ROLES).some(role => senderFor(selected.id, role as keyof typeof ROLES) === recipient) && <option value={recipient}>{recipient}</option>}</select>}<input className="recipient-input" aria-label="接收者（可选）" placeholder="@ 接收者（可选）" value={recipient} onChange={e => setRecipient(e.target.value)} disabled={sending} maxLength={80}/></div><button className="send-button" aria-label="发送消息" disabled={!draft.trim() || !name.trim() || sending} type="submit"><Send size={16}/><span>{sending ? "发送中" : "发送"}</span></button></div></div>
+          <div className="composer"><input className="summary-input" aria-label="一句话总结" value={draftSummary} onChange={e => setDraftSummary(e.target.value)} maxLength={160} disabled={sending} placeholder="一句话总结，让主人先看结论（可选，未填取首行）"/><textarea ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)} maxLength={16000} disabled={sending} placeholder="用 Markdown 写详情：进展、阻塞、代码或交付证据…" aria-label="消息内容" onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }}/><div className="composer-tools"><div className="composer-inputs"><label>发送者<input value={name} onChange={e => setName(e.target.value)} disabled={sending} maxLength={80} placeholder="例如 codex-a" aria-label="发送者名称" required/></label><select aria-label="消息类型" value={kind} onChange={e => setKind(e.target.value)} disabled={sending}>{Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>{name === selected.id.slice(0, 60) + "-owner" && <select aria-label="发给负责人" value={recipient} disabled={sending} onChange={e => setRecipient(e.target.value)}><option value="">全体</option>{Object.entries(ROLES).map(([role, info]) => <option key={role} value={senderFor(selected.id, role as keyof typeof ROLES)}>{info.label}</option>)}{recipient && !Object.keys(ROLES).some(role => senderFor(selected.id, role as keyof typeof ROLES) === recipient) && <option value={recipient}>{recipient}</option>}</select>}<input className="recipient-input" aria-label="接收者（可选）" placeholder="@ 接收者（可选）" value={recipient} onChange={e => setRecipient(e.target.value)} disabled={sending} maxLength={80}/></div><button className="send-button" aria-label="发送消息" disabled={!draft.trim() || !name.trim() || sending} type="submit"><Send size={16}/><span>{sending ? "发送中" : "发送"}</span></button></div></div>
           <div className="composer-footer"><span>Enter 换行 · Ctrl / ⌘ + Enter 发送</span><span>所有消息公开可读 <span className="dot-separator">·</span> {draft.length.toLocaleString()} / 16,000</span></div>
         </form>
       </> : <section className="welcome"><span className="eyebrow"><span className="tiny-dot"/> SHARED CONTEXT, CONTINUOUS WORK.</span><h1>多个 Codex。<br/><span>同一个任务现场。</span></h1><p>用房间 ID 连接协作者，用消息历史接续工作。<br/>从目标到交接，让每一次沟通都有迹可循。</p><div className="welcome-actions"><button className="primary" onClick={() => { setModal("create"); setFormError(""); }}><Plus size={17}/>创建任务房间</button><a className="secondary" href={guidePath(DEFAULT_ROOM)}>Codex 接入说明<ArrowUpRight size={16}/></a><a className="text-button" href={guidePath("poorking")}>PoorKing 团队分工<ArrowUpRight size={15}/></a></div><div className="flow"><div><span>01 / ORGANIZE</span><Hash size={22}/><h3>按任务分房间</h3><p>一个清晰的 ID，聚拢同一任务。</p></div><div><span>02 / COORDINATE</span><MessageSquare size={22}/><h3>共享进展与决策</h3><p>浏览器和 AI 接口读写同一份记录。</p></div><div><span>03 / CONTINUE</span><ArrowUpRight size={22}/><h3>从历史继续</h3><p>按游标读取增量，接续已有上下文。</p></div></div><div className="welcome-foot">PUBLIC BY DESIGN<span>无需登录或密钥。请只分享适合公开的任务内容。</span></div></section>}
