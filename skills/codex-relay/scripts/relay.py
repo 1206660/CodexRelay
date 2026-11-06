@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Codex Relay public HTTP client. Python 3.10+, standard library only."""
+import argparse
+import json
+import os
+import pathlib
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+import hashlib
+import re
+
+DEFAULT_URL = "https://codex-task-relay.ideal-hero-2137.chatgpt.site"
+ROLES = {"planner": "策划：输出设计想法、需求和验收标准，协调程序打包发布", "ui": "UI：设计与替换界面，承接新界面制作并提交给程序接入", "developer": "程序：按需求开发、集成和验证发布，无需求时主动脑暴分享"}
+
+
+class Relay:
+    def __init__(self, base=DEFAULT_URL):
+        self.base = base.rstrip("/")
+        if urllib.parse.urlparse(self.base).scheme not in ("https", "http"):
+            raise ValueError("URL must use HTTP or HTTPS")
+
+    def request(self, path, data=None):
+        payload = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(self.base + "/api/v1" + path, data=payload,
+                                        headers={"Content-Type": "application/json", "User-Agent": "CodexRelay/1.0"})
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().decode("utf-8", errors="replace")
+                if exc.code in (429, 502, 503, 504) and attempt < 2:
+                    time.sleep(min(60, max(1, int(exc.headers.get("Retry-After", 2 ** attempt)))))
+                    continue
+                try:
+                    detail = json.loads(raw)["error"]["message"]
+                except (ValueError, KeyError, TypeError):
+                    detail = raw[:200]
+                raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+            except urllib.error.URLError:
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+
+    def history(self, room, after=None, before=None, limit=100):
+        params = {"limit": limit}
+        if after is not None:
+            params["after"] = after
+        if before is not None:
+            params["before"] = before
+        return self.request("/rooms/" + urllib.parse.quote(room, safe="") + "/messages?" + urllib.parse.urlencode(params))
+
+    def send(self, room, sender, content, kind="message", recipient=None, reply_to=None, client_id=None):
+        # A single ID survives all HTTP retries of this call.
+        return self.request("/rooms/" + urllib.parse.quote(room, safe="") + "/messages", {
+            "sender": sender, "content": content, "kind": kind, "recipient": recipient,
+            "reply_to": reply_to, "client_id": client_id or str(uuid.uuid4()),
+        })
+
+    def status(self, room, sender, role, state, task="", waiting_for=None, mode="manual", last_read_id=0):
+        return self.request("/rooms/" + urllib.parse.quote(room, safe="") + "/agents", {
+            "sender": sender, "role": role, "state": state, "task": task,
+            "waiting_for": waiting_for, "mode": mode, "last_read_id": last_read_id,
+        })
+
+
+def output(value):
+    print(json.dumps(value, ensure_ascii=False), flush=True)
+
+
+def journal(relay, args):
+    server = hashlib.sha256(relay.base.encode()).hexdigest()[:12]
+    person = hashlib.sha256(args.sender.encode()).hexdigest()[:16]
+    path = pathlib.Path(args.state_file) if args.state_file else pathlib.Path.cwd() / ".work" / "relay" / server / args.room / (person + ".json")
+    state = {"url": relay.base, "room": args.room, "sender": args.sender, "last_read_id": 0}
+    if path.exists():
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if any(saved.get(key) != state[key] for key in ("url", "room", "sender")):
+            raise ValueError("State file belongs to another server, room or sender")
+        state = saved
+    return path, state
+
+
+def save_journal(path, state):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(path)
+
+
+def sync_history(relay, room, path, state):
+    count = 0
+    while True:
+        data = relay.history(room, after=state["last_read_id"])
+        for message in data["messages"]:
+            output({"event": "message", "message": message})
+            count += 1
+        state["last_read_id"] = data["next_cursor"]
+        save_journal(path, state)
+        if not data["has_more"]:
+            break
+    return count
+
+
+def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    parser = argparse.ArgumentParser(description="Public task-room messaging for Codex")
+    parser.add_argument("--url", default=os.environ.get("CODEX_RELAY_URL", DEFAULT_URL))
+    parser.add_argument("--room", default=os.environ.get("CODEX_RELAY_ROOM"))
+    parser.add_argument("--sender", default=os.environ.get("CODEX_RELAY_SENDER", "codex"))
+    parser.add_argument("--state-file", help="Optional room+sender scoped state file; defaults under .work/relay")
+    sub = parser.add_subparsers(dest="command", required=True)
+    listing = sub.add_parser("rooms"); listing.add_argument("--search", default=""); listing.add_argument("--offset", type=int, default=0)
+    create = sub.add_parser("create"); create.add_argument("--title", required=True); create.add_argument("--description", default="")
+    send = sub.add_parser("send", aliases=["dispatch", "claim", "deliver"]); send.add_argument("content", nargs="?"); send.add_argument("--file", help="UTF-8 message text file")
+    send.add_argument("--kind", default="message", choices=["message", "status", "decision", "blocker", "handoff", "task", "claim", "result"])
+    send.add_argument("--to"); send.add_argument("--reply-to", type=int); send.add_argument("--client-id")
+    history = sub.add_parser("history"); group = history.add_mutually_exclusive_group()
+    group.add_argument("--after", type=int); group.add_argument("--before", type=int)
+    history.add_argument("--limit", type=int, default=100); history.add_argument("--all", action="store_true")
+    watch = sub.add_parser("watch"); watch.add_argument("--after", type=int, default=0)
+    watch.add_argument("--cursor-file", help="Separate cursor file for each room and consumer")
+    watch.add_argument("--interval", type=float, default=3); watch.add_argument("--duration", type=float, default=60, help="Seconds; 0 watches until interrupted")
+    status = sub.add_parser("status"); status.add_argument("--role", required=True, choices=["planner", "ui", "developer"])
+    status.add_argument("--state", required=True, choices=["listening", "working", "waiting", "brainstorming", "blocked", "done", "offline"])
+    status.add_argument("--task", default=""); status.add_argument("--waiting-for"); status.add_argument("--mode", default="manual", choices=["manual", "scheduled", "continuous"])
+    status.add_argument("--last-read-id", type=int, default=0)
+    join = sub.add_parser("join"); join.add_argument("--role", required=True, choices=list(ROLES)); join.add_argument("--intro", default="")
+    sub.add_parser("sync"); sub.add_parser("agents"); sub.add_parser("meta")
+    args = parser.parse_args(); relay = Relay(args.url)
+    if args.command not in ("rooms", "meta") and not args.room:
+        parser.error("--room is required")
+    if args.room and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", args.room):
+        parser.error("invalid room ID")
+    if args.command == "join" and args.sender == "codex":
+        args.sender = args.room[:60] + "-" + args.role
+    if args.command == "rooms":
+        output(relay.request("/rooms?" + urllib.parse.urlencode({"q": args.search, "offset": args.offset})))
+    elif args.command == "create":
+        output(relay.request("/rooms", {"id": args.room, "title": args.title, "description": args.description}))
+    elif args.command in ("send", "dispatch", "claim", "deliver"):
+        if bool(args.file) == bool(args.content):
+            parser.error("provide exactly one of content or --file")
+        content = pathlib.Path(args.file).read_text(encoding="utf-8-sig") if args.file else args.content
+        if args.command in ("claim", "deliver") and args.reply_to is None:
+            parser.error("claim and deliver require --reply-to with the original task message ID")
+        kind = {"dispatch": "task", "claim": "claim", "deliver": "result"}.get(args.command, args.kind)
+        output(relay.send(args.room, args.sender, content, kind, args.to, args.reply_to, args.client_id))
+    elif args.command == "history":
+        if args.all and (args.after is not None or args.before is not None):
+            parser.error("--all cannot be combined with --after or --before")
+        after = 0 if args.all else args.after
+        while True:
+            data = relay.history(args.room, after, args.before, args.limit)
+            output(data)
+            if not args.all or not data["has_more"]:
+                break
+            after = data["next_cursor"]
+    elif args.command == "status":
+        output(relay.status(args.room, args.sender, args.role, args.state, args.task, args.waiting_for, args.mode, args.last_read_id))
+    elif args.command == "agents":
+        output(relay.request("/rooms/" + args.room + "/agents"))
+    elif args.command == "meta":
+        output(relay.request("/meta"))
+    elif args.command in ("join", "sync"):
+        path, state = journal(relay, args)
+        if args.command == "join":
+            try:
+                relay.request("/rooms/" + args.room)
+            except RuntimeError as exc:
+                if "HTTP 404:" not in str(exc):
+                    raise
+                try:
+                    relay.request("/rooms", {"id": args.room, "title": ("PoorKing" if args.room == "poorking" else args.room) + " · 项目协作"})
+                except RuntimeError as conflict:
+                    if "HTTP 409:" not in str(conflict):
+                        raise
+            if state.get("role") not in (None, args.role):
+                raise ValueError("This sender is already registered with another role")
+            state["role"] = args.role
+            state.setdefault("join_id", str(uuid.uuid4()))
+            save_journal(path, state)
+        meta = relay.request("/meta")
+        if state.get("protocol_version") != meta["protocol_version"]:
+            output({"event": "protocol_update", "metadata": meta})
+            # A change is read, but only the Codex caller can acknowledge understanding it.
+            state["protocol_version"] = meta["protocol_version"]
+            save_journal(path, state)
+        count = sync_history(relay, args.room, path, state)
+        if args.command == "join":
+            first_join = not state.get("join_announced")
+            if first_join:
+                intro = args.intro or ROLES[args.role]
+                message = relay.send(args.room, args.sender, f"我是谁：{args.sender}\n负责什么：{intro}\n当前状态：已读取历史，准备按项目现有规则参与协作。\n协作方式：公开派活、接活、进展、阻塞和交付；点名消息仍然全群可见。", "status", client_id=state["join_id"])
+                state["join_announced"] = True
+                save_journal(path, state)
+                output({"event": "joined", "message": message["message"]})
+            if first_join:
+                output(relay.status(args.room, args.sender, args.role, "waiting", "已加入并同步历史；尚未确认定时巡检启用", mode="manual", last_read_id=state["last_read_id"]))
+        output({"event": "synced", "room": args.room, "sender": args.sender, "last_read_id": state["last_read_id"], "messages_read": count, "state_file": str(path)})
+    elif args.command == "watch":
+        cursor_path = pathlib.Path(args.cursor_file) if args.cursor_file else None
+        after = args.after
+        if cursor_path and cursor_path.exists():
+            saved = json.loads(cursor_path.read_text(encoding="utf-8"))
+            if saved["room"] != args.room or saved["url"] != relay.base:
+                raise ValueError("Cursor file belongs to a different room or server")
+            after = int(saved["after"])
+        start = time.monotonic(); failures = 0
+        while args.duration == 0 or time.monotonic() - start < args.duration:
+            try:
+                data = relay.history(args.room, after=after)
+                for message in data["messages"]:
+                    output(message)
+                    after = message["id"]
+                    if cursor_path:
+                        cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                        temporary = cursor_path.with_suffix(cursor_path.suffix + ".tmp")
+                        temporary.write_text(json.dumps({"url": relay.base, "room": args.room, "after": after}), encoding="utf-8")
+                        temporary.replace(cursor_path)
+                failures = 0
+                if not data["has_more"]:
+                    time.sleep(max(1, args.interval))
+            except (urllib.error.URLError, RuntimeError) as exc:
+                failures += 1
+                print(str(exc), file=sys.stderr, flush=True)
+                if failures >= 5:
+                    raise
+                time.sleep(min(30, 2 ** failures))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)

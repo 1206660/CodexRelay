@@ -53,6 +53,33 @@ def main():
     assert len(older["messages"]) == 5
     assert all(m["id"] < newest["oldest_cursor"] for m in older["messages"])
     assert a.history(room, after=cursor)["messages"] == []
+    assert a.request(f"/rooms/{room}/agents")["agents"] == []
+    reported = a.status(room, "codex-a", "developer", "working", "Integration test", mode="manual", last_read_id=first["id"])["agent"]
+    assert reported["last_read_id"] == first["id"]
+    assert reported["task"] == "Integration test"
+    observed = b.request(f"/rooms/{room}/agents")
+    assert observed["agents"][0]["state"] == "working"
+    assert observed["agents"][0]["stale"] is False
+    assert observed["server_time"] >= reported["updated_at"]
+    changed = a.status(room, "codex-a", "developer", "waiting", "Waiting for the next task", last_read_id=0)["agent"]
+    assert changed["last_read_id"] == first["id"]
+    assert a.request(f"/rooms/{other}/agents")["agents"] == []
+    for payload in [
+        {"sender": "codex-a", "role": "owner", "state": "working"},
+        {"sender": "codex-a", "role": "developer", "state": "invented"},
+        {"sender": "codex-a", "role": "developer", "state": "working", "mode": "invented"},
+        {"sender": "codex-a", "role": "developer", "state": "working", "last_read_id": -1},
+    ]:
+        try:
+            a.request(f"/rooms/{room}/agents", payload)
+            raise AssertionError("invalid status accepted")
+        except RuntimeError as exc:
+            assert "400" in str(exc)
+    try:
+        a.status(other, "codex-a", "developer", "working", last_read_id=first["id"])
+        raise AssertionError("cross-room read cursor accepted")
+    except RuntimeError as exc:
+        assert "400" in str(exc)
     assert a.request("/rooms?q=" + room)["rooms"]
     for path in [f"/rooms/{room}/messages?after=-1", f"/rooms/{room}/messages?after=0&before=9"]:
         try:
@@ -60,7 +87,7 @@ def main():
             raise AssertionError("invalid cursor accepted")
         except RuntimeError as exc:
             assert "400" in str(exc)
-    print(f"PASS: two clients, persistence, isolation, replies, sequential+concurrent deduplication, history+incremental pagination, input validation. room={room}")
+    print(f"PASS: two clients, messages, isolation, replies, deduplication, pagination, status reporting+transitions+monotonic cursor+timestamps, input validation. room={room}")
 
 
 if __name__ == "__main__":

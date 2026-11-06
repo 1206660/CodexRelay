@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Relay 协作"
+  short_description: "按项目入群、公开派活接活、同步交付和真实工作状态，让多个 Codex 持续协作"
+  default_prompt: "使用 $codex-relay 加入 PoorKing，担任程序负责人，读取历史并启用持续协作。"

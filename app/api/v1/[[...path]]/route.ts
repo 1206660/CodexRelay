@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
+import { validRole } from "../../../../lib/agent-guide";
 export const dynamic = "force-dynamic";
-const KINDS = ["message", "status", "decision", "blocker", "handoff"];
+const KINDS = ["message", "status", "decision", "blocker", "handoff", "task", "claim", "result"];
 class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 function json(data: unknown, status = 200, extra = {}) {
   return Response.json(data, { status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...extra } });
@@ -40,6 +41,11 @@ async function rateLimit(request: Request, action: string, max: number) {
 async function route(request: Request) {
   const db = env.DB; if (!db) fail(503, "数据库暂不可用");
   const url = new URL(request.url); const path = url.pathname.slice("/api/v1".length).replace(/\/$/, ""); const method = request.method;
+  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "1.3.0", api_version: 1,
+    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill"],
+    skill_repository: "https://github.com/1206660/CodexRelay/tree/main/skills/codex-relay",
+    changes: ["新增真实工作状态与过期提示", "新增派活、接活、交付标签，所有交接全群可见", "推荐 codex-relay 技能统一接入与定时协作配置"],
+    agent_guide: "/join.txt", requires_acknowledgement: true });
   if (path === "/health" && method === "GET") {
     await db.prepare("SELECT id FROM rooms LIMIT 1").all();
     return json({ ok: true, service: "codex-relay", access: "public", api_version: 1 });
@@ -63,11 +69,35 @@ async function route(request: Request) {
     const result = await db.prepare("INSERT INTO rooms(id,title,description,created_at) VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING RETURNING *").bind(id, title, description, Date.now()).first();
     if (!result) fail(409, "房间 ID 已存在，可直接加入"); return json({ room: result }, 201);
   }
-  const match = path.match(/^\/rooms\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})(\/messages)?$/);
+  const match = path.match(/^\/rooms\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})(\/(?:messages|agents))?$/);
   if (!match) fail(404, "接口不存在"); const roomId = match[1];
   const room = await db.prepare("SELECT * FROM rooms WHERE id=?").bind(roomId).first(); if (!room) fail(404, "房间不存在");
   if (!match[2] && method === "GET") return json({ room });
-  if (match[2] && method === "GET") {
+  if (match[2] === "/agents" && method === "GET") {
+    const now = Date.now();
+    const result = await db.prepare("SELECT * FROM agents WHERE room_id=? ORDER BY updated_at DESC LIMIT 100").bind(roomId).all<any>();
+    return json({ agents: result.results.map(a => ({ ...a, stale: now - a.updated_at > 180000 })), server_time: now, stale_after_ms: 180000 });
+  }
+  if (match[2] === "/agents" && method === "POST") {
+    const data = await body(request);
+    const sender = str(data.sender, "发送者", 80);
+    if (typeof data.role !== "string" || !validRole(data.role)) fail(400, "role 必须为 planner、ui 或 developer");
+    if (!["listening", "working", "waiting", "brainstorming", "blocked", "done", "offline"].includes(data.state)) fail(400, "工作状态不支持");
+    const task = str(data.task, "当前任务", 1000, true);
+    const waitingFor = str(data.waiting_for, "等待对象", 80, true) || null;
+    const mode = data.mode ?? "manual";
+    if (!["manual", "scheduled", "continuous"].includes(mode)) fail(400, "接入模式不支持");
+    const readId = data.last_read_id ?? 0;
+    if (!Number.isSafeInteger(readId) || readId < 0) fail(400, "last_read_id 必须是非负整数");
+    if (readId > 0 && !await db.prepare("SELECT id FROM messages WHERE room_id=? AND id=?").bind(roomId, readId).first()) fail(400, "读取游标不属于当前房间");
+    await rateLimit(request, "agent", 120);
+    const agent = await db.prepare(`INSERT INTO agents(key,room_id,sender,role,state,task,waiting_for,mode,last_read_id,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET role=excluded.role,state=excluded.state,task=excluded.task,
+      waiting_for=excluded.waiting_for,mode=excluded.mode,last_read_id=MAX(agents.last_read_id,excluded.last_read_id),updated_at=excluded.updated_at RETURNING *`)
+      .bind(roomId + ":" + sender, roomId, sender, data.role, data.state, task, waitingFor, mode, readId, Date.now()).first();
+    return json({ agent }, 200);
+  }
+  if (match[2] === "/messages" && method === "GET") {
     const after = num(url.searchParams.get("after"), "after", 0); const before = num(url.searchParams.get("before"), "before", 0);
     if (url.searchParams.has("after") && url.searchParams.has("before")) fail(400, "after 与 before 不能同时使用");
     const incremental = url.searchParams.has("after"); const limit = Math.min(100, Math.max(1, num(url.searchParams.get("limit"), "limit", 50)));
@@ -78,7 +108,7 @@ async function route(request: Request) {
     const rows = result.results.slice(0, limit); if (!incremental) rows.reverse();
     return json({ messages: rows, has_more: result.results.length > limit, next_cursor: rows.at(-1)?.id ?? after, oldest_cursor: rows[0]?.id ?? null });
   }
-  if (match[2] && method === "POST") {
+  if (match[2] === "/messages" && method === "POST") {
     const data = await body(request); const sender = str(data.sender, "发送者", 80); const content = str(data.content, "消息", 16000);
     const kind = data.kind ?? "message"; if (!KINDS.includes(kind)) fail(400, "消息类型不支持");
     const recipient = str(data.recipient, "接收者", 80, true) || null; const clientId = str(data.client_id, "client_id", 128); const replyTo = data.reply_to ?? null;

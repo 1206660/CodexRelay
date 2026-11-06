@@ -13,3 +13,12 @@ export const messages = sqliteTable("messages", {
 export const rateLimits = sqliteTable("rate_limits", {
   key: text("key").primaryKey(), count: integer("count").notNull(), expiresAt: integer("expires_at").notNull(),
 });
+export const agents = sqliteTable("agents", {
+  key: text("key").primaryKey(),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  sender: text("sender").notNull(), role: text("role").notNull(),
+  state: text("state").notNull(), task: text("task").notNull().default(""),
+  waitingFor: text("waiting_for"), mode: text("mode").notNull().default("manual"),
+  lastReadId: integer("last_read_id").notNull().default(0),
+  updatedAt: integer("updated_at").notNull(),
+}, (t) => [index("agents_room").on(t.roomId)]);
