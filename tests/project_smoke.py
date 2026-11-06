@@ -5,12 +5,14 @@ import importlib.util
 import pathlib
 import uuid
 import time
+import urllib.request
 
 spec=importlib.util.spec_from_file_location("relay",pathlib.Path(__file__).parents[1]/"clients"/"relay.py")
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--url",required=True);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--url",required=True);parser.add_argument("--overview-cookie-file",required=True);args=parser.parse_args()
+    opener=urllib.request.build_opener();opener.addheaders=[("Cookie",pathlib.Path(args.overview_cookie_file).read_text().strip())];urllib.request.install_opener(opener)
     api=module.Relay(args.url)
     project="test-control-"+uuid.uuid4().hex[:8];other=project+"-other";owner=project+"-owner"
     for room in (project,other):

@@ -97,7 +97,11 @@ def main():
         raise AssertionError("cross-room read cursor accepted")
     except RuntimeError as exc:
         assert "400" in str(exc)
-    assert a.request("/rooms?q=" + room)["rooms"]
+    try:
+        a.request("/rooms?q=" + room)
+        raise AssertionError("anonymous project discovery accepted")
+    except RuntimeError as exc:
+        assert "HTTP 401:" in str(exc)
     for path in [f"/rooms/{room}/messages?after=-1", f"/rooms/{room}/messages?after=0&before=9"]:
         try:
             a.request(path)

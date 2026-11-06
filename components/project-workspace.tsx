@@ -11,25 +11,30 @@ import TaskForm from "./task-form";
 import TaskDetails from "./task-details";
 import MemberPanel from "./member-panel";
 import MessageBody from "./message-body";
+import {useOverviewAccess} from "./overview-access";
+import {useProjectAlerts} from "./live-notifications";
 import { ControlError,Empty,StatusTag,controlApi,since,useLive } from "./control-ui";
 export default function ProjectWorkspace({room}:{room:string}){
   const [tab,setTab]=useState("tasks"),[filter,setFilter]=useState("all"),[query,setQuery]=useState(""),[search,setSearch]=useState(""),[offset,setOffset]=useState(0),[selected,setSelected]=useState<number|null>(null);
   const [newProject,setNewProject]=useState(false),[edit,setEdit]=useState(false),[newTask,setNewTask]=useState(false),[syncing,setSyncing]=useState(false),[actionError,setActionError]=useState(""),[toast,setToast]=useState("");
   const actor=room.slice(0,60)+"-owner";
+  useEffect(()=>{const open=(e:Event)=>{if((e as CustomEvent).detail===room)changeTab("chat");};window.addEventListener("relay-open-chat",open);return()=>window.removeEventListener("relay-open-chat",open);},[room]);
   useEffect(()=>{const q=new URLSearchParams(location.search);const panel=q.get("tab");if(panel&&["tasks","members","activity","deliveries","chat"].includes(panel))setTab(panel);if(q.get("filter"))setFilter(q.get("filter")!);const id=Number(q.get("task"));if(Number.isSafeInteger(id)&&id>0)setSelected(id);},[]);
   useEffect(()=>{const timer=setTimeout(()=>{setSearch(query);setOffset(0);},200);return()=>clearTimeout(timer);},[query]);
   useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(""),2800);return()=>clearTimeout(timer);},[toast]);
-  const list=useLive<ProjectList>("/projects?limit=100",12000),live=useLive<{project:ProjectRecord;server_time:number}>("/projects/"+room);
+  const access=useOverviewAccess();
+  const list=useLive<ProjectList>(access.authenticated?"/projects?limit=100":null,12000),live=useLive<{project:ProjectRecord;server_time:number}>("/projects/"+room);
   const tasks=useLive<{tasks:TaskRecord[];total:number;has_more:boolean}>(tab==="tasks"||tab==="deliveries"?"/projects/"+room+"/tasks?"+new URLSearchParams({filter:tab==="deliveries"?"deliveries":filter,q:search,limit:"40",offset:String(offset)}):null);
   const activity=useLive<{messages:any[]}>(tab==="activity"?"/rooms/"+room+"/messages?limit=60":null);
   const project=live.data?.project;
+  useProjectAlerts(access.authenticated?list.data?.projects:project?[project]:undefined);
   function changeTab(value:string){setTab(value);setOffset(0);const q=new URLSearchParams(location.search);q.set("tab",value);q.delete("task");history.replaceState(null,"","?"+q.toString());}
   function selectTask(id:number|null){setSelected(id);const q=new URLSearchParams(location.search);if(id)q.set("task",String(id));else q.delete("task");history.replaceState(null,"","?"+q.toString());}
   function changed(){tasks.reload();live.reload();list.reload();activity.reload();setToast("已同步到任务与项目群聊");}
   async function sync(){if(syncing)return;setSyncing(true);setActionError("");let count=0;
     try{let more=true;while(more){const r=await controlApi("/projects/"+room+"/sync",{method:"POST",body:"{}"});count+=r.imported;more=r.has_more;}changed();setToast("已登记 "+count+" 项历史派活");}catch(e:any){setActionError(e.message);}finally{setSyncing(false);}
   }
-  return <ControlShell projects={project?[project,...(list.data?.projects||[]).filter(p=>p.id!==project.id)]:list.data?.projects||[]} activeId={room} onCreate={()=>setNewProject(true)}><div className="control-content project-content">
+  return <ControlShell owner={access.authenticated} projects={project?[project,...(access.authenticated?list.data?.projects||[]:[]).filter(p=>p.id!==project.id)]:[]} activeId={room} onCreate={()=>setNewProject(true)}><div className="control-content project-content">
     <a className="control-back" href="/"><ArrowLeft size={14}/>所有项目</a>
     {live.error&&<ControlError message={live.error} onRetry={live.reload}/>}
     {!project?<Empty icon={<LoaderCircle size={28}/>}>{live.error?"未能打开项目":"正在读取项目…"}</Empty>:<>

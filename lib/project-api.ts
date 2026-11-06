@@ -53,6 +53,8 @@ const PROJECT_SQL=`SELECT r.id,r.title,r.description,r.created_at,
   MAX(r.created_at,COALESCE((SELECT MAX(created_at) FROM messages m WHERE m.room_id=r.id),0),COALESCE(s.updated_at,0)) AS last_activity,
   (SELECT COALESCE(NULLIF(summary,''),substr(content,1,160)) FROM messages m WHERE m.room_id=r.id ORDER BY id DESC LIMIT 1) AS last_summary,
   (SELECT sender FROM messages m WHERE m.room_id=r.id ORDER BY id DESC LIMIT 1) AS last_sender
+  ,COALESCE((SELECT MAX(id) FROM messages m WHERE m.room_id=r.id),0) AS last_message_id
+  ,(SELECT kind FROM messages m WHERE m.room_id=r.id ORDER BY id DESC LIMIT 1) AS last_kind
   FROM rooms r LEFT JOIN project_settings s ON s.room_id=r.id`;
 async function projects(db: D1Database) {
   const now=Date.now();

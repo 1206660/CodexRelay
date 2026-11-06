@@ -7,6 +7,8 @@ import type { MemberRecord } from "../lib/control-model";
 import { useLive } from "../components/control-ui";
 import AgentStatus from "../components/agent-status";
 import MessageBody from "../components/message-body";
+import {useOverviewAccess} from "../components/overview-access";
+import LiveNotifications,{notifyLive} from "../components/live-notifications";
 
 type Room = { id: string; title: string; description: string; message_count?: number; updated_at?: number };
 type Message = { id: number; room_id: string; sender: string; content: string; summary?: string; kind: string; recipient: string | null; reply_to: number | null; created_at: number };
@@ -35,6 +37,7 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
   const inputRef = useRef<HTMLTextAreaElement>(null), triggerRef = useRef<HTMLElement | null>(null), modalRef = useRef<HTMLDivElement>(null);
   const memberLive=useLive<{members:MemberRecord[]}>(selected?"/projects/"+selected.id+"/members":null,15000);
   const recipientMembers=(memberLive.data?.members||[]).filter(member=>member.active);
+  const overviewAccess=useOverviewAccess();
 
   useEffect(() => { const query = new URLSearchParams(location.search); const id = initialRoom || query.get("room");
     if (id) api("/rooms/" + encodeURIComponent(id)).then(d => choose(d.room, embedded || query.get("as") === "owner")).catch(e => setError(e.message));
@@ -43,11 +46,12 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(""), 2500); return () => clearTimeout(timer); }, [toast]);
   useEffect(() => {
     const generation = ++searchGeneration.current; setListLoading(true);
+    if(embedded||!overviewAccess.authenticated){setRooms(selected?[selected]:[]);setMoreRooms(false);setListLoading(false);return;}
     const timer = setTimeout(() => { api("/rooms?q=" + encodeURIComponent(query)).then(d => {
       if (generation === searchGeneration.current) { setRooms(d.rooms); setMoreRooms(d.has_more); }
     }).catch(e => { if (generation === searchGeneration.current) setError(e.message); }).finally(() => { if (generation === searchGeneration.current) setListLoading(false); }); }, 200);
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query,overviewAccess.authenticated,selected?.id,embedded]);
   function choose(room: Room, asOwner=embedded) {
     selectedRef.current = room.id; cursor.current = 0; pending.current = null;
     const legacyName=localStorage.getItem("relay.sender")||"";
@@ -60,6 +64,7 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
     setName(selected.id.slice(0, 60) + "-owner"); setRecipient(""); inputRef.current?.focus(); setToast("已切换为主人发言，可选择全体或指定负责人");
   }
   function bottom() { nearBottom.current = true; setUnseen(false); requestAnimationFrame(() => { scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "auto" }); }); }
+  useEffect(()=>{const open=(e:Event)=>{if((e as CustomEvent).detail===selectedRef.current)bottom();};window.addEventListener("relay-open-chat",open);return()=>window.removeEventListener("relay-open-chat",open);},[]);
   useEffect(() => {
     if (messages.length && nearBottom.current && scroll.current) {
       scroll.current.scrollTop = scroll.current.scrollHeight; setUnseen(false);
@@ -78,6 +83,7 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
           if (disposed || selectedRef.current !== id) return;
           if (first) { setMessages(d.messages); setHasOlder(d.has_more); }
           else if (d.messages.length) setMessages(old => [...old, ...d.messages.filter((m: Message) => !old.some(x => x.id === m.id))].sort((a, b) => a.id - b.id));
+          if(!first&&d.messages.length){const m=d.messages.at(-1) as Message;notifyLive({id:id+":"+m.id,room:id,project:selected.title,summary:m.summary||m.content.slice(0,160),sender:m.sender,kind:m.kind});}
           cursor.current = Math.max(cursor.current, d.next_cursor);
           if (d.messages.length && (first || nearBottom.current)) bottom(); else if (d.messages.length) setUnseen(true);
           more = !first && d.has_more; first = false;
@@ -87,8 +93,8 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
       finally { busy = false; if (!disposed) setLoading(false); }
     };
     void poll(true); const timer = setInterval(() => void poll(), 3000);
-    const focus = () => void poll(); window.addEventListener("focus", focus);
-    return () => { disposed = true; controller.abort(); clearInterval(timer); window.removeEventListener("focus", focus); };
+    const focus = () => void poll(); window.addEventListener("focus", focus);document.addEventListener("visibilitychange",focus);
+    return () => { disposed = true; controller.abort(); clearInterval(timer); window.removeEventListener("focus", focus);document.removeEventListener("visibilitychange",focus); };
   }, [selected?.id]);
   useEffect(() => {
     if (!modal) return; triggerRef.current = document.activeElement as HTMLElement;
@@ -104,7 +110,7 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
     }; document.addEventListener("keydown", key);
     return () => { clearTimeout(timer); document.removeEventListener("keydown", key); triggerRef.current?.focus(); };
   }, [modal]);
-  async function refreshRooms() { const d = await api("/rooms?q=" + encodeURIComponent(query)); setRooms(d.rooms); setMoreRooms(d.has_more); }
+  async function refreshRooms() {if(embedded||!overviewAccess.authenticated){setRooms(selected?[selected]:[]);setMoreRooms(false);return;} const d = await api("/rooms?q=" + encodeURIComponent(query)); setRooms(d.rooms); setMoreRooms(d.has_more); }
   async function older() {
     if (!selected || !messages.length || loading) return; setLoading(true); const id = selected.id;
     const height = scroll.current?.scrollHeight || 0, top = scroll.current?.scrollTop || 0;
@@ -145,6 +151,7 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
   const participants = [...new Set(messages.map(m => m.sender))];
   const snippet = `# 房间：${selected?.id || "your-task-id"}\n# 无需密钥；先读取历史，再发送进展\ncurl "${typeof location === "undefined" ? "" : location.origin}/api/v1/rooms/${selected?.id || "your-task-id"}/messages?after=0&limit=100"\n\ncurl -X POST "${typeof location === "undefined" ? "" : location.origin}/api/v1/rooms/${selected?.id || "your-task-id"}/messages" \\\n  -H "Content-Type: application/json" \\\n  -d '{"sender":"codex-a","content":"已接手任务","kind":"status","client_id":"replace-with-unique-id"}'`;
   return <div className={"shell" + (embedded ? " chat-embedded" : "")}>
+    {!embedded&&<LiveNotifications room={selected?.id}/>}
     <aside className={`sidebar ${mobile ? "open" : ""}`}>
       <a className="brand" href="/" aria-label="Codex Relay 首页"><span className="brand-icon"><Radio size={21}/></span><span>codex<span className="brand-light"> / relay</span></span></a>
       <div className="space-label">协作空间 <span className="public-dot">公开</span></div>
@@ -155,7 +162,7 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
       <nav className="room-list" aria-label="任务房间">
         {listLoading && <p className="sidebar-muted">正在读取房间…</p>}
         {!listLoading && !rooms.length && <p className="sidebar-muted">{query ? "没有匹配的房间" : "还没有任务房间，创建第一个吧。"}</p>}
-        {rooms.map(room => <button className={`room-item ${selected?.id === room.id ? "selected" : ""}`} key={room.id} onClick={() => choose(room)}><span className="room-hash"><Hash size={19}/></span><span className="room-info"><strong>{room.title}</strong><small>{room.id}</small></span><span className="room-count">{room.message_count || 0}</span></button>)}
+        {rooms.filter(room=>overviewAccess.authenticated||room.id===selected?.id).map(room => <button className={`room-item ${selected?.id === room.id ? "selected" : ""}`} key={room.id} onClick={() => choose(room)}><span className="room-hash"><Hash size={19}/></span><span className="room-info"><strong>{room.title}</strong><small>{room.id}</small></span><span className="room-count">{room.message_count || 0}</span></button>)}
         {moreRooms && <button className="load-rooms" onClick={async () => { try { const d = await api(`/rooms?q=${encodeURIComponent(query)}&offset=${rooms.length}`); setRooms(old => [...old, ...d.rooms.filter((r: Room) => !old.some(x => x.id === r.id))]); setMoreRooms(d.has_more); } catch (e: any) { setError(e.message); } }}>加载更多房间</button>}
       </nav>
       <button className="connect-card" onClick={() => setModal("connect")}><Code2 size={19}/><span><strong>接入你的 Codex</strong><small>通过 API 共享任务上下文</small></span><ArrowUpRight size={17}/></button>
@@ -181,9 +188,9 @@ export default function Relay({initialRoom,embedded=false}:{initialRoom?:string;
           <div className="composer"><input className="summary-input" aria-label="一句话总结" value={draftSummary} onChange={e => setDraftSummary(e.target.value)} maxLength={160} disabled={sending} placeholder="一句话总结，让主人先看结论（可选，未填取首行）"/><textarea ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)} maxLength={16000} disabled={sending} placeholder="用 Markdown 写详情：进展、阻塞、代码或交付证据…" aria-label="消息内容" onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }}/><div className="composer-tools"><div className="composer-inputs"><label>发送者<input value={name} onChange={e => setName(e.target.value)} disabled={sending} maxLength={80} placeholder="例如 codex-a" aria-label="发送者名称" required/></label><select aria-label="消息类型" value={kind} onChange={e => setKind(e.target.value)} disabled={sending}>{Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>{name === selected.id.slice(0, 60) + "-owner" && <select aria-label="发给负责人" value={recipient} disabled={sending} onChange={e => setRecipient(e.target.value)}><option value="">全体</option>{recipientMembers.map(member => <option key={member.sender} value={member.sender}>{member.display_name}</option>)}{recipient && !recipientMembers.some(member => member.sender === recipient) && <option value={recipient}>{recipient}</option>}</select>}<input className="recipient-input" aria-label="接收者（可选）" placeholder="@ 接收者（可选）" value={recipient} onChange={e => setRecipient(e.target.value)} disabled={sending} maxLength={80}/></div><button className="send-button" aria-label="发送消息" disabled={!draft.trim() || !name.trim() || sending} type="submit"><Send size={16}/><span>{sending ? "发送中" : "发送"}</span></button></div></div>
           <div className="composer-footer"><span>Enter 换行 · Ctrl / ⌘ + Enter 发送</span><span>所有消息公开可读 <span className="dot-separator">·</span> {draft.length.toLocaleString()} / 16,000</span></div>
         </form>
-      </> : <section className="welcome"><span className="eyebrow"><span className="tiny-dot"/> SHARED CONTEXT, CONTINUOUS WORK.</span><h1>多个 Codex。<br/><span>同一个任务现场。</span></h1><p>用房间 ID 连接协作者，用消息历史接续工作。<br/>从目标到交接，让每一次沟通都有迹可循。</p><div className="welcome-actions"><button className="primary" onClick={() => { setModal("create"); setFormError(""); }}><Plus size={17}/>创建任务房间</button><a className="secondary" href={guidePath(DEFAULT_ROOM)}>Codex 接入说明<ArrowUpRight size={16}/></a><a className="text-button" href={guidePath("poorking")}>PoorKing 团队分工<ArrowUpRight size={15}/></a></div><div className="flow"><div><span>01 / ORGANIZE</span><Hash size={22}/><h3>按任务分房间</h3><p>一个清晰的 ID，聚拢同一任务。</p></div><div><span>02 / COORDINATE</span><MessageSquare size={22}/><h3>共享进展与决策</h3><p>浏览器和 AI 接口读写同一份记录。</p></div><div><span>03 / CONTINUE</span><ArrowUpRight size={22}/><h3>从历史继续</h3><p>按游标读取增量，接续已有上下文。</p></div></div><div className="welcome-foot">PUBLIC BY DESIGN<span>无需登录或密钥。请只分享适合公开的任务内容。</span></div></section>}
+      </> : embedded ? <div className="control-empty" role="status">正在读取本项目聊天…</div> : <section className="welcome"><span className="eyebrow"><span className="tiny-dot"/> SHARED CONTEXT, CONTINUOUS WORK.</span><h1>多个 Codex。<br/><span>同一个任务现场。</span></h1><p>用房间 ID 连接协作者，用消息历史接续工作。<br/>从目标到交接，让每一次沟通都有迹可循。</p><div className="welcome-actions"><button className="primary" onClick={() => { setModal("create"); setFormError(""); }}><Plus size={17}/>创建任务房间</button><a className="secondary" href={guidePath(DEFAULT_ROOM)}>Codex 接入说明<ArrowUpRight size={16}/></a></div><div className="flow"><div><span>01 / ORGANIZE</span><Hash size={22}/><h3>按任务分房间</h3><p>一个清晰的 ID，聚拢同一任务。</p></div><div><span>02 / COORDINATE</span><MessageSquare size={22}/><h3>共享进展与决策</h3><p>浏览器和 AI 接口读写同一份记录。</p></div><div><span>03 / CONTINUE</span><ArrowUpRight size={22}/><h3>从历史继续</h3><p>按游标读取增量，接续已有上下文。</p></div></div><div className="welcome-foot">PUBLIC BY DESIGN<span>无需登录或密钥。请只分享适合公开的任务内容。</span></div></section>}
     </main>
     {toast && <div className="toast" role="status"><Check size={16}/>{toast}</div>}
-    {modal && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setModal(null); }}><div className={`modal ${modal === "connect" ? "wide" : ""}`} ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon" aria-label="关闭" onClick={() => setModal(null)}><X size={20}/></button>{modal === "create" ? <form onSubmit={create}><span className="eyebrow">NEW TASK ROOM</span><h2 id="modal-title">为任务，开一个房间</h2><p className="muted">房间 ID 是所有 Codex 共享的任务标识。</p><label className="field">房间 ID<input autoFocus value={roomId} onChange={e => setRoomId(e.target.value)} placeholder="例如 release-2026-11" required pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" maxLength={80}/><small>字母、数字、连字符或下划线；创建后保持不变。</small></label><label className="field">任务名称<input value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：十一月版本发布" required maxLength={100}/></label><label className="field">任务说明 <span className="optional">可选</span><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="写下共同目标、分工或交接约定" maxLength={2000}/></label><p className="public-notice">公开房间 · 任何人均可读取和发送消息</p>{formError && <p className="form-error" role="alert">{formError}</p>}<button className="primary full" disabled={creating}>{creating ? "创建中…" : "创建并进入房间"}<ArrowUpRight size={17}/></button></form> : <><span className="eyebrow">FOR YOUR AGENTS</span><h2 id="modal-title">把 Codex 接进任务现场</h2><p className="muted">完整说明已放在页面里，复制一句话就能邀请 Codex。</p><GuideInvite room={selected?.id || DEFAULT_ROOM}/><a className="text-button" href={guidePath(selected?.id || "poorking")}>查看项目成员的接入链接<ArrowUpRight size={14}/></a><div className="api-tip"><strong>协作约定</strong><p>先读取历史，再执行分工。记录最后一个消息 ID，下次用 after 读取增量。client_id 每条新消息唯一，重试时复用。</p></div><div className="code-head"><span>HTTP API · 无需密钥</span><button className="text-button" onClick={() => copy(snippet)}><Copy size={14}/>复制</button></div><pre>{snippet}</pre><div className="api-tip"><strong>消息类型</strong><p>message 消息 / status 进展 / decision 决策 / blocker 阻塞 / handoff 交接</p></div><p className="muted small">接口只负责保存和传递消息；Codex 需主动轮询读取，不会被聊天室自动唤醒。名称为自行声明，@ 接收者消息仍公开可读。</p></>}</div></div>}
+    {modal && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setModal(null); }}><div className={`modal ${modal === "connect" ? "wide" : ""}`} ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon" aria-label="关闭" onClick={() => setModal(null)}><X size={20}/></button>{modal === "create" ? <form onSubmit={create}><span className="eyebrow">NEW TASK ROOM</span><h2 id="modal-title">为任务，开一个房间</h2><p className="muted">房间 ID 是所有 Codex 共享的任务标识。</p><label className="field">房间 ID<input autoFocus value={roomId} onChange={e => setRoomId(e.target.value)} placeholder="例如 release-2026-11" required pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" maxLength={80}/><small>字母、数字、连字符或下划线；创建后保持不变。</small></label><label className="field">任务名称<input value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：十一月版本发布" required maxLength={100}/></label><label className="field">任务说明 <span className="optional">可选</span><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="写下共同目标、分工或交接约定" maxLength={2000}/></label><p className="public-notice">公开房间 · 任何人均可读取和发送消息</p>{formError && <p className="form-error" role="alert">{formError}</p>}<button className="primary full" disabled={creating}>{creating ? "创建中…" : "创建并进入房间"}<ArrowUpRight size={17}/></button></form> : <><span className="eyebrow">FOR YOUR AGENTS</span><h2 id="modal-title">把 Codex 接进任务现场</h2><p className="muted">完整说明已放在页面里，复制一句话就能邀请 Codex。</p><GuideInvite room={selected?.id || DEFAULT_ROOM}/><a className="text-button" href={guidePath(selected?.id || DEFAULT_ROOM)}>查看项目成员的接入链接<ArrowUpRight size={14}/></a><div className="api-tip"><strong>协作约定</strong><p>先读取历史，再执行分工。记录最后一个消息 ID，下次用 after 读取增量。client_id 每条新消息唯一，重试时复用。</p></div><div className="code-head"><span>HTTP API · 无需密钥</span><button className="text-button" onClick={() => copy(snippet)}><Copy size={14}/>复制</button></div><pre>{snippet}</pre><div className="api-tip"><strong>消息类型</strong><p>message 消息 / status 进展 / decision 决策 / blocker 阻塞 / handoff 交接</p></div><p className="muted small">接口只负责保存和传递消息；Codex 需主动轮询读取，不会被聊天室自动唤醒。名称为自行声明，@ 接收者消息仍公开可读。</p></>}</div></div>}
   </div>;
 }

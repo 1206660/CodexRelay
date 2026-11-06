@@ -16,11 +16,11 @@ export function useLive<T>(path:string|null,interval=8000){
     const controller=new AbortController();let stopped=false,busy=false;
     async function update(first=false){if(stopped||busy||(!first&&document.hidden))return;busy=true;
       try{const value=await controlApi<T>(path!,{signal:controller.signal});if(!stopped){setData(value);setError("");}}
-      catch(e:any){if(!stopped&&e.name!=="AbortError")setError(e.message);}
+      catch(e:any){if(!stopped&&e.name!=="AbortError"){setError(e.message);if(e.status===401)setData(null);}}
       finally{busy=false;if(!stopped)setLoading(false);}
     }
-    setLoading(true);void update(true);const timer=setInterval(()=>void update(),interval),focus=()=>void update(true);window.addEventListener("focus",focus);
-    return()=>{stopped=true;controller.abort();clearInterval(timer);window.removeEventListener("focus",focus);};
+    setLoading(true);void update(true);const timer=setInterval(()=>void update(),interval),focus=()=>{if(!document.hidden)void update(true);};window.addEventListener("focus",focus);document.addEventListener("visibilitychange",focus);
+    return()=>{stopped=true;controller.abort();clearInterval(timer);window.removeEventListener("focus",focus);document.removeEventListener("visibilitychange",focus);};
   },[path,tick,interval]);
   return{data,error,loading,reload:()=>setTick(n=>n+1)};
 }

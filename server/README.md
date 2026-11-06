@@ -15,6 +15,10 @@
 
 当前目标为用户指定的现有私人代理服务器，公开入口 https://192.227.231.68:9444/，API前缀 /api/v1。复用服务器现有、有效的Let's Encrypt IP证书，并添加证书续期后的Nginx重载钩子。
 
+总览访问：服务器环境需配置RELAY_OVERVIEW_PASSWORD_HASH（格式pbkdf2-sha256$100000$16字节盐的hex$32字节摘要hex）与独立随机RELAY_OVERVIEW_SESSION_SECRET。不设时全局列表默认拒绝访问，不回退成公开总览。不要提交真实值、明文密码或Cookie。GET /owner/session检查会话，POST同路径以JSON password解锁，POST /owner/logout锁定；均在/api/v1下。已知项目ID的项目内API免密，全局项目/房间/待办列表及总览证据图片需主人会话。原公开身份标签不变，此限制不等于每个项目有独立身份认证。
+
+tests/overview_access.mjs使用隐藏标准输入中的密码进行真实HTTP验证；需要继续跑项目总览回归时，可显式--cookie-file .work/local-owner-cookie.txt保存测试会话，交给tests/project_smoke.py --overview-cookie-file同一路径。测试会话仅放忽略目录，不作为客户端默认配置。
+
 切换步骤：
 
 1. 先验证新服务器只读服务与HTTPS可达。

@@ -33,7 +33,7 @@ export function guideText(room:string,role?:Role,sender?:string,members:GuideMem
 项目工作台：${SITE_URL}/projects/${room}
 总控台：${SITE_URL}/
 聊天室：${SITE_URL}/?room=${room}
-服务公开免密，可使用协作 Skill 或 HTTP，无需模型 API Key。
+本项目可按房间ID直接协作，可使用协作 Skill 或 HTTP，无需模型 API Key。总览及全部项目/房间列表由主人密码保护；成员不需要总览密码，也不要索取、记录或分享它。只同步自己的项目，不枚举其他房间。
 
 ## 身份和负责范围
 

@@ -10,8 +10,9 @@ import { DEFAULT_ROOM,guideText,validRoom,validRole,validSender } from "../lib/a
 import { listMembers } from "../lib/member-service";
 import JoinView from "../components/join-view";
 import { env,nativeDb } from "./node-env";
+import { overviewAuthorized } from "../lib/overview-auth";
 const here=path.dirname(fileURLToPath(import.meta.url)),publicDir=path.join(here,"public");
-const types:Record<string,string>={".html":"text/html; charset=utf-8",".js":"text/javascript; charset=utf-8",".css":"text/css; charset=utf-8",".svg":"image/svg+xml",".png":"image/png",".ico":"image/x-icon",".json":"application/json; charset=utf-8",".woff2":"font/woff2"};
+const types:Record<string,string>={".html":"text/html; charset=utf-8",".js":"text/javascript; charset=utf-8",".css":"text/css; charset=utf-8",".svg":"image/svg+xml",".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".ico":"image/x-icon",".json":"application/json; charset=utf-8",".woff2":"font/woff2"};
 const template=await readFile(path.join(publicDir,"index.html"),"utf8");
 const server=createServer(async(req,res)=>{
   try{
@@ -42,6 +43,7 @@ const server=createServer(async(req,res)=>{
     }
     const pathname=decodeURIComponent(url.pathname),candidate=path.resolve(publicDir,"."+pathname);
     if(!candidate.startsWith(publicDir+path.sep)&&candidate!==publicDir){res.writeHead(403);res.end();return;}
+    if((candidate===path.join(publicDir,"evidence")||candidate.startsWith(path.join(publicDir,"evidence")+path.sep))&&!await overviewAuthorized(new Request(url,{headers:{cookie:String(req.headers.cookie||"")}}))){res.writeHead(401,{"Cache-Control":"no-store"});res.end("请先解锁总览");return;}
     let file=candidate;
     try{if(!(await stat(file)).isFile())file=path.join(publicDir,"index.html");}catch{if(pathname.startsWith("/assets/")){res.writeHead(404);res.end();return;}file=path.join(publicDir,"index.html");}
     const bytes=await readFile(file),contentType=types[path.extname(file)]||"application/octet-stream";

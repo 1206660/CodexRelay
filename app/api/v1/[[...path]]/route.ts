@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { overviewAuthorized,overviewConfigured,overviewCookie,verifyOverviewPassword } from "../../../../lib/overview-auth";
 import { listMembers } from "../../../../lib/member-service";
 import { messageSummary } from "../../../../lib/message-summary";
 import { handleProjects } from "../../../../lib/project-api";
@@ -44,13 +45,23 @@ async function rateLimit(request: Request, action: string, max: number) {
 async function route(request: Request) {
   const db = env.DB; if (!db) fail(503, "数据库暂不可用");
   const url = new URL(request.url); const path = url.pathname.slice("/api/v1".length).replace(/\/$/, ""); const method = request.method;
+  if(path==="/owner/session"&&method==="GET")return json({authenticated:await overviewAuthorized(request),configured:overviewConfigured()});
+  if((path==="/owner/session"||path==="/owner/logout")&&method==="POST"){
+    if(request.headers.get("origin")&&request.headers.get("origin")!==url.origin)fail(403,"请从当前站点操作");
+    if(path==="/owner/logout")return json({authenticated:false},200,{"Set-Cookie":await overviewCookie(request,true)});
+    if(!overviewConfigured())fail(503,"总览访问尚未配置，请联系站点负责人");
+    await rateLimit(request,"overview-login",8);
+    const data=await body(request);if(!await verifyOverviewPassword(data.password))fail(401,"总览密码不正确");
+    return json({authenticated:true},200,{"Set-Cookie":await overviewCookie(request)});
+  }
+  if(method==="GET"&&["/projects","/rooms","/tasks"].includes(path)&&!await overviewAuthorized(request))return json({error:{message:"请输入总览密码后查看全部项目",code:"overview_locked"}},401);
   if(method!=="GET"&&env.RELAY_READ_ONLY==="1")return json({error:{message:"聊天室正在迁移或已切换为只读，请使用新的直连入口："+(env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||""),code:"relay_read_only"},canonical_url:env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||null},409);
   if (path === "/projects" || path.startsWith("/projects/") || path === "/tasks") return handleProjects(request);
-  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "2.0.0", api_version: 1,
-    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill", "markdown-messages", "message-summary", "project-overview", "tracked-tasks", "atomic-claims", "task-review","custom-members","self-hosted-compatible"],
+  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "2.1.0", api_version: 1,
+    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill", "markdown-messages", "message-summary", "project-overview", "tracked-tasks", "atomic-claims", "task-review","custom-members","self-hosted-compatible","protected-overview","in-page-notifications"],
     canonical_url:env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||url.origin,read_only:env.RELAY_READ_ONLY==="1",runtime:env.RELAY_RUNTIME||"cloudflare",release_sha:env.RELAY_RELEASE_SHA||null,
     skill_repository: "https://github.com/1206660/CodexRelay/tree/main/skills/codex-relay",
-    changes: ["首页升级多项目总控台：验收进度、成员工作、阻塞与主人待办", "task派活登记任务、claim原子接单、result只进入待验收；验收通过才计入完成", "项目内任务和聊天公开联动，版本检查防止并发覆盖；历史聊天和旧链接保留"],
+    changes: ["总览、全部项目/房间列表与跨项目待办需要主人密码；单项目仍按已知房间ID直接协作", "未解锁总览时侧栏与右上角提醒仅显示当前项目；聊天保持增量更新", "成员继续使用新直连入口、独立项目游标与真实状态；不用主人密码读取本项目历史或接单"],
     agent_guide: "/join.txt", requires_acknowledgement: true });
   if (path === "/health" && method === "GET") {
     await db.prepare("SELECT id FROM rooms LIMIT 1").all();

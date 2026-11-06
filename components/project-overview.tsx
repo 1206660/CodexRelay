@@ -5,6 +5,8 @@ import type { MemberRecord,ProjectList,TaskRecord } from "../lib/control-model";
 
 import ControlShell from "./control-shell";
 import ProjectForm from "./project-form";
+import OverviewGate from "./overview-access";
+import {useProjectAlerts} from "./live-notifications";
 import { ControlError,Empty,Metric,StatusTag,since,useLive } from "./control-ui";
 
 export function MemberLine({member,now}:{member:MemberRecord;now:number}){
@@ -12,11 +14,15 @@ export function MemberLine({member,now}:{member:MemberRecord;now:number}){
   return <div className="project-agent-line" title={member.display_name+" · "+member.role_label+" · "+(member.task||member.responsibility||"")}><span className="project-role">{member.display_name}</span><StatusTag state={state} compact/><span className="project-current-task">{member.task||member.responsibility||member.role_label}</span></div>;
 }
 export default function ProjectOverview(){
+  return <OverviewGate><OverviewContent/></OverviewGate>;
+}
+function OverviewContent(){
   const [filter,setFilter]=useState("all"),[query,setQuery]=useState(""),[search,setSearch]=useState(""),[test,setTest]=useState(false),[offset,setOffset]=useState(0),[create,setCreate]=useState(false);
   useEffect(()=>{if(new URLSearchParams(location.search).get("view")==="attention")setFilter("attention");},[]);
   useEffect(()=>{const t=setTimeout(()=>{setSearch(query);setOffset(0);},200);return()=>clearTimeout(t);},[query]);
   const live=useLive<ProjectList>("/projects?"+new URLSearchParams({filter,q:search,include_test:test?"1":"0",limit:"30",offset:String(offset)}).toString());
   const navigation=useLive<ProjectList>("/projects?limit=100",15000);
+  useProjectAlerts(live.data?.projects);
   const inbox=useLive<{tasks:TaskRecord[];total:number}>(filter==="attention"?"/tasks?filter=attention&limit=10&include_test="+(test?"1":"0"):null);
   const data=live.data,stats=data?.summary||{projects:0,review:0,decisions:0,blocked:0,attention:0};
   const filters=[["all","全部"],["attention","待我处理"],["active","推进中"],["blocked","有阻塞"],["archived","归档"]];
