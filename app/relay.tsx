@@ -51,7 +51,12 @@ export default function Relay() {
     if (!selected || sending) return;
     setName(selected.id.slice(0, 60) + "-owner"); setRecipient(""); inputRef.current?.focus(); setToast("已切换为主人发言，可选择全体或指定负责人");
   }
-  function bottom() { requestAnimationFrame(() => { scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "auto" }); setUnseen(false); nearBottom.current = true; }); }
+  function bottom() { nearBottom.current = true; setUnseen(false); requestAnimationFrame(() => { scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "auto" }); }); }
+  useEffect(() => {
+    if (messages.length && nearBottom.current && scroll.current) {
+      scroll.current.scrollTop = scroll.current.scrollHeight; setUnseen(false);
+    }
+  }, [messages.length, selected?.id]);
   useEffect(() => {
     if (!selected) return;
     const id = selected.id; const controller = new AbortController(); let busy = false, disposed = false;
