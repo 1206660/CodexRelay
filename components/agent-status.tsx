@@ -1,39 +1,20 @@
 "use client";
-import { useEffect, useState } from "react";
-import { Activity, AlertCircle } from "lucide-react";
-import { ROLES, senderFor, guidePath, type Role } from "../lib/agent-guide";
-type Agent = { sender: string; role: Role; state: string; task: string; waiting_for: string | null; mode: string; last_read_id: number; updated_at: number };
-const STATES: Record<string, string> = { listening: "监听中", working: "工作中", waiting: "等待消息", brainstorming: "脑暴中", blocked: "遇到阻塞", done: "本项已完成", offline: "已停止" };
-const MODES: Record<string, string> = { manual: "手动接入", scheduled: "定时巡检", continuous: "本轮持续监听" };
-export default function AgentStatus({ room, onOwner }: { room: string; onOwner: () => void }) {
-  const [data, setData] = useState<Agent[]>([]), [error, setError] = useState(""), [now, setNow] = useState(Date.now()), [loading, setLoading] = useState(true);
-  useEffect(() => {
-    const controller = new AbortController(); let busy = false, stopped = false;
-    setData([]); setError(""); setLoading(true);
-    async function update() {
-      if (busy || stopped || document.hidden) return; busy = true;
-      try { const response = await fetch(`/api/v1/rooms/${room}/agents`, { signal: controller.signal });
-        const body: any = await response.json(); if (!response.ok) throw new Error(body.error?.message || "状态读取失败");
-        if (!stopped) { setData(body.agents); setNow(body.server_time); setError(""); }
-      } catch (e: any) { if (!stopped && e.name !== "AbortError") setError(e.message); }
-      finally { busy = false; if (!stopped) setLoading(false); }
-    }
-    void update(); const timer = setInterval(() => { setNow(t => t + 5000); void update(); }, 5000);
-    const focus = () => void update(); window.addEventListener("focus", focus);
-    return () => { stopped = true; controller.abort(); clearInterval(timer); window.removeEventListener("focus", focus); };
-  }, [room]);
-  return <section className="agent-status" aria-label="AI 工作状态"><div className="agent-status-heading"><span><Activity size={14}/>AI 工作状态</span><small>由 Codex 上报 · 3 分钟未更新标为过期</small><button className="text-button" onClick={onOwner}>主人发需求 →</button></div>
-    {error && <p className="agent-status-error" role="status"><AlertCircle size={12}/>{error}；保留上次记录</p>}
-    <div className="agent-status-grid">{(Object.keys(ROLES) as Role[]).map(role => {
-      const matching = data.filter(a => a.role === role);
-      const agent = matching.find(a => a.sender === senderFor(room, role)) ?? matching[0];
-      const stale = !!agent && now - agent.updated_at > 180000;
-      const status = !agent ? (loading ? "读取中" : "尚未报到") : stale ? "状态过期" : STATES[agent.state] || agent.state;
-      return <article key={role} className={`agent-card ${!agent || stale ? "inactive" : agent.state}`}><div className="agent-card-head"><strong>{ROLES[role].label}</strong><span>{status}</span></div>
-        <p>{agent ? agent.task || "未填写当前任务" : "尚无实时状态，不能确认是否在运行"}</p>
-        {agent?.waiting_for && <div className="agent-waiting">等待：{agent.waiting_for}</div>}
-        <div className="agent-card-footer">{agent ? <><span>{MODES[agent.mode] || agent.mode}</span><time title={new Date(agent.updated_at).toLocaleString("zh-CN")}>{Math.max(0, Math.floor((now - agent.updated_at) / 1000)) < 60 ? "刚刚更新" : `${Math.max(1, Math.floor((now - agent.updated_at) / 60000))} 分钟前`}</time></> : <a href={guidePath(room, role)}>接入该负责人 ↗</a>}</div>
-        {agent && <small className="agent-sender">{agent.sender} · 已读 #{agent.last_read_id}</small>}
-      </article>;
-    })}</div></section>;
+import { useEffect,useState } from "react";
+import { Activity,ChevronDown,Settings2,Users } from "lucide-react";
+import type { MemberRecord } from "../lib/control-model";
+import { ControlError,StatusTag,useLive,since } from "./control-ui";
+import { guidePath } from "../lib/agent-guide";
+export default function AgentStatus({room,onOwner,onManage}:{room:string;onOwner:()=>void;onManage?:()=>void}){
+  const live=useLive<{members:MemberRecord[];server_time:number}>("/rooms/"+room+"/agents",5000),[expanded,setExpanded]=useState(false);
+  const active=(live.data?.members||[]).filter(m=>m.active),members=expanded?active:active.slice(0,4);
+  const modes:Record<string,string>={manual:"手动接入",scheduled:"定时巡检",continuous:"本轮监听"};
+  useEffect(()=>setExpanded(false),[room]);
+  return <section className="agent-status" aria-label="AI 工作状态"><div className="agent-status-heading"><span><Activity size={15}/>成员状态 <small>{active.length||""}</small></span><small>实际报到 · 3 分钟未更新标为过期</small><div className="agent-heading-actions">{onManage?<button className="text-button" onClick={onManage} title="管理成员"><Settings2 size={14}/>成员</button>:<a className="text-button" href={"/projects/"+room+"?tab=members"}><Users size={14}/>成员</a>}<button className="text-button" onClick={onOwner}>主人发需求 →</button></div></div>
+    {live.error&&<ControlError message={live.error} onRetry={live.reload}/>}
+    {!members.length?<div className="agent-empty"><Users size={18}/><span>{live.loading?"正在读取成员…":"尚无成员，按项目需要自由添加或邀请"}</span><a href={guidePath(room)}>接入 ↗</a></div>:<div className="agent-status-grid flexible">{members.map(member=>{
+      const state=!member.last_seen?"unknown":member.stale?"stale":member.state||"unknown";
+      return <article key={member.sender} className={"agent-card "+(!member.last_seen||member.stale?"inactive":state)}><div className="agent-card-head"><strong title={member.sender}>{member.display_name}</strong><StatusTag state={state} compact/></div><span className="agent-role-label">{member.role_label||member.role}</span><p title={member.task||member.responsibility||""}>{member.task||member.responsibility||"等待状态上报"}</p>{member.waiting_for&&<div className="agent-waiting">等待：{member.waiting_for}</div>}<div className="agent-card-footer"><span>{member.last_seen?modes[member.mode||""]||"已上报":"未接入"}</span><time title={member.last_seen?new Date(member.last_seen).toLocaleString("zh-CN"):"尚无报到"}>{member.last_seen?since(member.last_seen,live.data?.server_time):""}</time></div></article>;
+    })}</div>}
+    {active.length>4&&<button className="agent-expand-members" onClick={()=>setExpanded(!expanded)}><ChevronDown size={13}/>{expanded?"收起":"全部 "+active.length+" 位成员"}</button>}
+  </section>;
 }

@@ -4,6 +4,10 @@ import type { ConnectorBinding } from "../lib/connector-contract.mjs";
 
 const worker = {
   fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {
+    if(env.RELAY_REDIRECT_URL){
+      const incoming=new URL(request.url),target=new URL(incoming.pathname+incoming.search,env.RELAY_REDIRECT_URL);
+      if(target.protocol==="https:")return Response.redirect(target.toString(),308);
+    }
     let binding = ctx.props?.CONNECTORS;
     // Local preview emulates the same request-scoped capability. This branch and
     // the auxiliary service binding are absent from production builds.

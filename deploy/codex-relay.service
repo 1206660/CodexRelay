@@ -1,0 +1,25 @@
+[Unit]
+Description=Codex Relay project control and chat
+After=network.target codex-relay-firewall.service
+Wants=codex-relay-firewall.service
+
+[Service]
+Type=simple
+User=codex-relay
+Group=codex-relay
+WorkingDirectory=/opt/codex-relay/current
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/codex-relay.env
+ExecStart=/opt/codex-relay/runtime/current/bin/node /opt/codex-relay/current/server.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=35
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/codex-relay
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

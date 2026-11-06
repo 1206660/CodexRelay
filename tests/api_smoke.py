@@ -82,7 +82,7 @@ def main():
     assert changed["last_read_id"] == first["id"]
     assert a.request(f"/rooms/{other}/agents")["agents"] == []
     for payload in [
-        {"sender": "codex-a", "role": "owner", "state": "working"},
+        {"sender": "codex-a", "role": "过"*41, "state": "working"},
         {"sender": "codex-a", "role": "developer", "state": "invented"},
         {"sender": "codex-a", "role": "developer", "state": "working", "mode": "invented"},
         {"sender": "codex-a", "role": "developer", "state": "working", "last_read_id": -1},

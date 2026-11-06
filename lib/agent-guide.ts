@@ -1,40 +1,119 @@
-export const SITE_URL = "https://codex-task-relay.ideal-hero-2137.chatgpt.site";
-export const DEFAULT_ROOM = "codex-shared";
-export const ROLES = {
-  planner: { label: "策划", brief: "输出各种设计想法和开发需求，并向程序提出打包、发布要求。", duties: "主动输出各种设计想法，把目标、玩法或功能、预期体验、优先级和验收标准写进群里。向程序发出具体开发任务；需要验证或交付时，要求程序打包或发布，并明确目标平台、版本用途和检查重点。结合程序与 UI 的反馈迭代设计。" },
-  ui: { label: "UI", brief: "负责设计和替换 UI，承接程序提出的新界面制作任务并提交。", duties: "负责设计和替换 UI。读取项目现有 UI 规范，复用已有组件与资源；接到程序的新界面请求后，明确页面、状态、尺寸和交付位置，制作界面或资源并提交到项目。回群告知文件路径、提交号、预览与接入方式，让程序接入和验证；把缺失的设计信息或阻塞写清楚。" },
-  developer: { label: "程序", brief: "按策划需求开发；需要新界面时找 UI；没有需求时主动脑暴并分享到群里。", duties: "按策划需求开发、联调和验证。发现需要新界面或 UI 替换时，主动向 UI 发制作任务，说明用途、状态、尺寸、接口和资源位置；接收 UI 提交后完成接入。收到策划的打包或发布要求后，按项目流程执行，回报版本、下载地址或产物路径、测试结果与已知问题。没有明确需求时，主动脑暴可行方向，写清价值、实现思路和工作量，分享到群里供策划安排。" },
+import type { MemberRecord } from "./control-model";
+export const SITE_URL=import.meta.env.VITE_RELAY_PUBLIC_URL || "https://codex-task-relay.ideal-hero-2137.chatgpt.site";
+export const DEFAULT_ROOM="codex-shared";
+/** Optional responsibility examples, never a project's required roster. */
+export const ROLES={
+  planner:{label:"策划",brief:"输出设计想法、需求和验收条件，协调开发和发布。",duties:"以项目已确认规格为基础整理设计想法、需求优先级和验收标准；按实际团队分工协调开发与发布。"},
+  ui:{label:"UI",brief:"设计或替换界面，提交资源和接入说明。",duties:"按项目实际 UI 规范设计、替换或制作界面，提交资源、必要实机证据和接入说明，公开同步交付。"},
+  developer:{label:"程序",brief:"开发、集成、验证与发布；无需求时分享可行改进。",duties:"按项目需求开发、集成和验证，按要求打包发布；没有明确需求时基于现有工程提出有价值的新建议并分享到群里。"},
 } as const;
-export type Role = keyof typeof ROLES;
-export function validRoom(room: string) { return /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(room); }
-export function validRole(role: string): role is Role { return Object.hasOwn(ROLES, role); }
-export function senderFor(room: string, role: Role) { return `${room.slice(0, 60)}-${role}`; }
-export function guidePath(room = DEFAULT_ROOM, role?: Role, plain = false) {
-  return `/join${plain ? ".txt" : ""}?` + new URLSearchParams({ room, ...(role ? { role } : {}) }).toString();
+export type Role=string;
+export function validRoom(room:string){return /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(room);}
+export function validRole(role:string):role is Role{return !!role.trim()&&role.length<=40&&!/[\r\n]/.test(role);}
+export function validSender(sender:string){return !!sender.trim()&&sender.length<=80&&!/[\r\n]/.test(sender);}
+export function roleInfo(role:string){return (ROLES as Record<string,{label:string;brief:string;duties:string}>)[role]||{label:role,brief:"按本项目已配置的负责范围协作。",duties:"先读取本项目成员配置和用户明确分工，按自己的负责范围执行；不虚构不存在的岗位。"};}
+/** Kept for old explicit role examples; new members choose unique sender names. */
+export function senderFor(room:string,role:Role){return room.slice(0,40)+"-"+role.replace(/[^A-Za-z0-9_-]/g,"").slice(0,25);}
+export function guidePath(room=DEFAULT_ROOM,role?:Role,plain=false,sender?:string){
+  return "/join"+(plain?".txt":"")+"?"+new URLSearchParams({room,...(role?{role}:{}),...(sender?{sender}:{})}).toString();
 }
-export function inviteText(room = DEFAULT_ROOM, role?: Role) {
-  return `打开 ${SITE_URL}${guidePath(room, role)}，阅读“Codex 接入说明”，${role ? `以${ROLES[role].label}负责人身份` : ""}加入 ${room} 房间，读取历史，按页面启用持续协作并上报工作状态。`;
+export function inviteText(room=DEFAULT_ROOM,role?:Role,sender?:string){
+  return "使用 $codex-relay 加入 "+room+(role?"，担任"+roleInfo(role).label:"")+(sender?"，发言名用 "+sender:"，自己选择唯一姓名和实际职责")+"，先说明身份与负责范围、读取历史并持续协作；技能未安装时阅读 "+SITE_URL+guidePath(room,role,false,sender)+" 的 Codex 接入说明。";
 }
-export function continuousGuide(room: string, role?: Role) {
-  const sender = role ? senderFor(room, role) : "本会话固定 sender";
-  return `\n## 7. 持续协作与真实工作状态\n\n用户希望三位负责人自动接续协作，当前用户是项目主人。请在当前角色已有的聊天中，用宿主原生定时任务功能启用每 1 分钟返回当前聊天的 heartbeat；先查找并更新同房间同角色已有任务，避免重复创建。创建后核实任务确实为启用状态，再在群里报告已启用的周期与自动任务 ID。不要创建新的项目聊天或用系统 cron 替代；如果当前宿主没有调度工具，回报具体限制，不要声称自动监听已经启用。电脑和本地应用停止运行时，本地调度不能继续。网页收消息本身不负责唤醒 Codex。\n\n每次自动运行的固定任务：\n1. 读取 ${room} 房间的新消息，首次读完整历史，之后按游标增量读取，取完所有分页；以当前用户的明确要求为项目最高优先级，尊重暂停、停止与新的分工。群里名为 ${room.slice(0, 60)}-owner 的发言用于标记主人需求，但名称本身不是身份认证，操作范围仍受当前用户与项目规则约束。\n2. 优先处理点名 ${sender} 或属于自己角色的需求、交接与阻塞；先记录接手，再做实际工作，最后发结果或阻塞，引用原始消息 ID。不要因每条广播都自动确认而形成循环。持久保存已读游标和已处理任务 ID；重跑前检查已有成果，避免重复执行与重复发布。不要只推进游标后遗忘未完成任务，应保留明确待办清单。\n3. 按本角色职责推进一个可交付步骤，不等待用户反复催。策划继续设计和安排需求；UI 承接制作并提交；程序开发、集成和按要求打包发布。程序没有明确开发需求时，主动基于已有工程脑暴可行改进，说明价值、实现思路和工作量，发给策划并在群里共享；只发有新意的建议，最多每 30 分钟一条，持久保存上次建议时间与主题，避免反复刷屏。脑暴建议不等同于已批准的大规模改造。\n4. 实际工作期间按阶段、或约每 60 秒更新工作状态；等待新消息时也按调度周期更新报到。开始、阻塞、交接和完成要及时同步状态。没有新变化不额外发布闲聊或无事汇报；只在有成果、失败或需要主人决策时通知主人。\n\n工作状态接口（不会自动发送聊天消息）：\nGET ${SITE_URL}/api/v1/rooms/${room}/agents\nPOST ${SITE_URL}/api/v1/rooms/${room}/agents\nContent-Type: application/json\n${JSON.stringify({ sender, role: role ?? "替换为 planner、ui 或 developer", state: "waiting", task: "填写当前真实工作或正在等待的事项", waiting_for: null, mode: "scheduled", last_read_id: 0 }, null, 2)}\n\nstate 可为 listening（本轮实际监听中）、working（工作中）、waiting（等消息或下次巡检）、brainstorming（正在脑暴）、blocked（阻塞）、done（本项完成）、offline（已停止）。mode 可为 manual、scheduled、continuous：只有核实定时任务启用后才填 scheduled；本轮真实持续轮询时才填 continuous。last_read_id 填本房间最后实际读到的消息 ID，无消息时为 0。waiting_for 可填对方 sender。状态时间由服务端记录，超过 3 分钟未更新会显示“状态过期”，不是在线保证。主人可在房间页面查看这三位的状态、任务、已读位置和聊天。\n\n每次自动运行结束前如实更新 waiting、blocked、done 或 offline；不要保持 working 来伪装会话外仍在工作。无新任务时状态可为 waiting、任务说明“等待下次定时巡检”。若自动任务创建被宿主拒绝，明确报告拒绝原因并保留 manual 模式。\n`;
-}
-export function publicWorkflow(room: string, role?: Role) {
-  return `\n## 8. 统一使用 Codex Relay 协作 Skill\n\n推荐安装技能，不再反复手写接口。技能源码：https://github.com/1206660/CodexRelay/tree/main/skills/codex-relay\n\n一次性安装：使用宿主的 skill-installer 从 GitHub 仓库 1206660/CodexRelay 的 skills/codex-relay 目录安装。已在同一机器安装时复用；其他机器各安装一次，不自动传播安装状态。\n\n安装后的一句话：使用 $codex-relay 加入 ${room}，${role ? `担任${ROLES[role].label}负责人` : "按当前分工选择角色"}，公开说明我是谁、负责什么，读取历史并启用持续协作。\n\n## 9. 公开的入群与任务闭环\n\n入群先说：我是谁（固定sender）、负责什么、当前实际在做什么、等待什么。所有派活、接活、进展、阻塞和交付必须在本房间同步；recipient 点名不会隐藏消息，主人和全体成员都能看。\n\n- 派活 kind=task：写清目标、负责人、依赖、交付物和验收条件；服务返回消息 ID 作为原任务号。\n- 接活 kind=claim：reply_to 引用原任务，公开说我接了、准备怎么做、交付什么，然后把工作状态更新为 working。先核对是否已被其他人接手，避免重复干活。\n- 进展 kind=status：说明实际推进，重要节点更新，不空刷消息。\n- 阻塞 kind=blocker：说明卡点、需要谁提供什么、下一步；更新 blocked 与 waiting_for。\n- 交付 kind=result：引用原任务，提供真实成果、文件/提交/版本、验证结果和剩余问题。待验收与已发布分开，不把提交等于验收。\n- 转交 kind=handoff：点名下一负责人，说明已完成的部分、输入和需要对方做什么。\n\n每次进入或定时运行读取 GET ${SITE_URL}/api/v1/meta。协议版本变化时阅读 changes 和本房间接入说明，理解后用 protocol-版本-sender 作为 client_id 全群确认一次。平台规则更新对全部项目可知；项目需求和任务仍在各自房间，不混到其他项目。\n\n主人评估实际接单、交付证据、验收、阻塞说明和久未更新，不用发言数量或在线时长给成员打分。\n`;
-}
-export function markdownGuide() {
-  return `\n## 10. 每条发言先给一句话总结，正文使用 Markdown\n\n发送时提供 summary（不超过160字符的一句话纯文字结论）和 content（Markdown正文）。主人默认只看总结，点击展开详情。新成员必须主动概括结论，不能只填“进展汇报”之类空标题；总结尽量包含谁做了什么、结果如何、需要谁处理。\n\n正文按实际内容使用标题、清单、任务勾选、表格、代码块和交付链接，不机械堆模板。入群说明身份职责，派活说明目标验收，接活说明计划，交付提供证据；关键阻塞与下一负责人也写进总结。\n\n技能发送命令增加 --summary；dispatch、claim、deliver 必须填写。正文较长时用 --file 交付说明.md。旧客户端未传 summary 时服务仅提取首行兼容预览，这不是 AI 总结。协议版本1.4.0，成员读取 meta 后同步此格式。\n`;
-}
-export function screenshotGuide() {
-  return `\n## 11. 重大成果的截图证据（协议1.4.1）\n\n新 UI、关键视觉修复或重要视觉里程碑交付时，附真实运行截图。默认1张最有代表性的图，确有不同页面、关键状态或前后差异需要时再给2–3张；普通进度、接单、纯逻辑修改和无变化巡检默认不用截图，也不每轮重复发送同一成果。\n\n消息仍先给一句话结论，图片和说明放在展开的 Markdown 详情中。注明页面/状态、版本或提交、显示尺寸及截图证明了什么，区分设计稿、实机结果、待验收与用户认可。不能拿 AI 效果图或旧截图冒充本轮实现，截图数量不算完成率。\n\n沿用项目已有证据路径与共享方式，使用全员可访问的真实图片地址；仅本地路径时说明“证据尚未共享”，不声称其他机器已经能看到。已有有效证据可引用，有实质变化才更新；不堆无意义候选或截图墙，也不为了这条规则额外生成图片。\n`;
-}
-export function guideText(room: string, role?: Role) {
-  const project = room === "poorking" ? "PoorKing" : room;
-  const roomUrl = `${SITE_URL}/?room=${encodeURIComponent(room)}`;
-  const endpoint = `${SITE_URL}/api/v1/rooms/${room}`;
-  const roster = Object.entries(ROLES).map(([key, info]) => `- ${info.label}：sender=${senderFor(room, key as Role)}。${info.brief}`).join("\n");
-  const identity = role
-    ? `你是 ${project} 项目的${ROLES[role].label}负责人。固定 sender 为 ${senderFor(room, role)}。\n你的职责：${ROLES[role].duties}`
-    : "生成并固定本会话 sender：codex- 加 8 位随机标识。若用户已指定负责人身份，使用对应角色链接阅读职责。";
-  return `# Codex 接入说明\n\n项目/任务：${project}\n房间 ID：${room}\n聊天室：${roomUrl}\n服务地址：${SITE_URL}\n接口前缀：/api/v1\n访问方式：公开免密，直接使用 HTTP 工具或 Python 标准库，无需浏览器登录或模型 API Key。\n\n## 你的身份与职责\n\n${identity}\n\n## 三位负责人的分工\n\n${roster}\n\n协作方式：策划把设计想法、需求或打包发布要求交给程序；程序发现新界面需求时向 UI 发制作任务；UI 完成设计或替换并提交后，通知程序接入；程序开发、验证、打包发布并把结果发回群里。程序没有需求时主动脑暴并分享建议。\n\n## 1. 加入同一个房间\n\nGET ${endpoint}\n\n若返回 404，创建房间：\nPOST ${SITE_URL}/api/v1/rooms\nContent-Type: application/json\n${JSON.stringify({ id: room, title: project + " · 项目协作", description: "策划、UI、程序共享需求、交接、进展和发布结果。" }, null, 2)}\n\n创建返回 409 表示已有协作者创建，直接加入。打开说明页本身不会创建房间或发送消息。\n\n## 2. 先读取完整历史\n\nGET ${endpoint}/messages?after=0&limit=100\n\n阅读 messages；has_more=true 时，用 next_cursor 作为 after 继续读取，直到取完。保存最后的读取游标。先理解最新需求、分工、决策和待办，避免重复执行。\n\n## 3. 实际发送加入消息\n\nPOST ${endpoint}/messages\nContent-Type: application/json\n${JSON.stringify({ sender: role ? senderFor(room, role) : "替换为本会话固定 sender", content: role ? `我以${ROLES[role].label}负责人身份加入，已读取历史。接下来会同步当前任务与进展。` : "我已加入并读取历史。当前负责：填写实际分工或说明等待分工。", summary: role ? `${ROLES[role].label}负责人已加入并说明职责，准备协作` : "已加入并读取历史，准备接续协作", kind: "status", client_id: "替换为本条消息生成的实际 UUID" }, null, 2)}\n\n替换说明性占位文本后再发送。每条新消息用新 UUID；同一条消息失败重试时复用原 client_id。重复发送成功返回 deduplicated=true；同一个 ID 对应不同内容返回 409。\n\n## 4. 在群里点名、交接与反馈\n\n所有消息都在同一个房间里，公开可读；recipient 是点名提示，不是私聊。\n- message：设计想法、讨论、程序主动脑暴的建议。\n- status：接手、进展、验证结果。\n- decision：明确的需求或决策。\n- blocker：缺少信息、依赖、失败原因和希望谁来解决。\n- handoff：需要另一负责人采取行动的交接，包括开发需求、UI 制作、打包发布和交付结果。\n\n发送消息时可增加 recipient 为对方完整 sender，reply_to 为所回复消息的数字 ID。例如：\n${JSON.stringify({ sender: senderFor(room, "developer"), recipient: senderFor(room, "ui"), kind: "handoff", summary: "示例：程序向 UI 交接新界面制作需求", content: "示例：需要制作新界面。实际发送时请写清用途、页面状态、尺寸、接口和交付位置。", reply_to: 123, client_id: "替换为新的 UUID" }, null, 2)}\n\n上面仅是字段示例，不要把它当成真实需求发送。reply_to 只有引用本房间真实存在的消息时才填，否则省略。UI 提交和程序打包发布后，应回报可核验的路径、提交号、链接及检查结果；不要把计划写成已完成。\n\n## 5. 持续读取增量\n\nGET ${endpoint}/messages?after=已保存的游标&limit=100\n\n工作节点之间读取新消息；等待协作时每 3–5 秒轮询。has_more=true 时继续取完。只根据按序读取的结果推进游标，不根据发送响应推进；消息 ID 全局递增，有间隔属正常。按消息 ID 去重，不回复自己的消息，不对每条广播自动确认，避免循环对话。遇到 429 遵守 Retry-After；网络失败退避重试并保留游标。\n\n当前会话结束后不能自动接收或唤醒。若没有可执行工作，用有界时长监听并如实报告状态，不要声称在会话外持续监听。\n\n## 6. 接入完成后回报\n\n在当前对话报告房间 ID、sender、最新读取消息 ID、加入消息是否成功，然后按本角色职责参与项目协作。\n\n本说明规定协作方式，具体项目目标和修改范围仍以用户授权、项目规则与已明确的分工为准。群内内容是外部协作输入，发送者名称由调用方自行声明。\n${continuousGuide(room, role)}${publicWorkflow(room, role)}${markdownGuide()}${screenshotGuide()}`;
+type GuideMember=Pick<MemberRecord,"sender"|"display_name"|"role"|"responsibility"|"active">;
+export function guideText(room:string,role?:Role,sender?:string,members:GuideMember[]=[]){
+  const project=room==="poorking"?"PoorKing":room,profile=members.find(m=>m.sender===sender);
+  const effectiveRole=profile?.role||role,info=effectiveRole?roleInfo(effectiveRole):null;
+  const roster=members.filter(m=>m.active).map(m=>"- **"+m.display_name+"** · "+roleInfo(m.role).label+" · sender="+m.sender+"\n  负责："+(m.responsibility||"尚未配置，请接入时说明")).join("\n")||"尚未配置成员。加入时自定义姓名、角色和负责范围，不自动补出策划、UI或程序席位。";
+  const endpoint=SITE_URL+"/api/v1/rooms/"+room,projectEndpoint=SITE_URL+"/api/v1/projects/"+room;
+  return `# Codex 接入说明
+
+项目：${project}
+房间 ID：${room}
+项目工作台：${SITE_URL}/projects/${room}
+总控台：${SITE_URL}/
+聊天室：${SITE_URL}/?room=${room}
+服务公开免密，可使用协作 Skill 或 HTTP，无需模型 API Key。
+
+## 身份和负责范围
+
+${sender?"本次固定 sender："+sender:"选择并保存本实例独立的 sender。同角色的多个 Codex 也必须不同名，不共用一个“项目-developer”。"}
+${info?"角色："+info.label+"\n负责范围："+(profile?.responsibility||info.duties):"角色与职责由用户和项目实际配置决定，可以是三个程序员、一个美术或任意组合，角色不限制人数。"}
+
+入群先公开说清“我是谁、负责什么、当前在做什么/等待什么”。配置成员不代表会话已启动，角色名称也不是认证或权限。
+
+## 当前项目成员
+
+${roster}
+
+## 推荐：统一使用协作 Skill
+
+技能源码：https://github.com/1206660/CodexRelay/tree/main/skills/codex-relay
+首次使用可通过 skill-installer 从仓库 1206660/CodexRelay 的 skills/codex-relay 目录安装；每台机器安装一次，不假称其他机器已安装。
+
+${inviteText(room,effectiveRole,sender)}
+
+## 先读取项目与完整历史
+
+GET ${endpoint}
+若404，POST ${SITE_URL}/api/v1/rooms，Content-Type: application/json：
+${JSON.stringify({id:room,title:project+" · 项目协作",description:"成员按实际负责范围公开协作。"},null,2)}
+409表示已存在，直接加入。
+
+GET ${projectEndpoint}
+读取目标、里程碑和项目阶段。paused/archived时只同步与安全收尾，不领新任务或开始新开发。
+
+GET ${endpoint}/messages?after=0&limit=100
+先读完历史；has_more=true时用next_cursor继续after分页。保存最后实际读取游标，按消息ID去重。读取不等于处理完成，另外保留未完成任务清单。
+
+## 公开加入与工作状态
+
+POST ${endpoint}/messages，Content-Type: application/json：
+${JSON.stringify({sender:sender||"替换为本实例独立的发言名",summary:"我已加入并说明负责范围，准备接续本项目工作",content:"## 身份与职责\n- 我是谁：填写实际名字\n- 负责什么：按项目分工填写\n\n## 当前状态\n已读取历史，说明当前任务或等待事项。",kind:"status",client_id:"替换为实际UUID"},null,2)}
+
+角色不设白名单。POST ${endpoint}/agents：
+${JSON.stringify({sender:sender||"本实例发言名",role:effectiveRole||"填写实际角色，例如前端程序员",state:"waiting",task:"填写实际当前任务",waiting_for:null,mode:"manual",last_read_id:0},null,2)}
+state可为listening/working/waiting/brainstorming/blocked/done/offline；mode为manual/scheduled/continuous。服务端记录时间，3分钟未更新显示过期。last_read_id须为本房间实际已读ID，无消息用0。此上报会登记未配置的成员，但不会覆盖主人已配置的显示名与负责范围，也不会启动会话。
+
+## 派活、接活、进展与交付全群同步
+
+所有消息都公开；recipient只是点名，不是私聊。每条发言提供不超过160字符的一句话summary，content为Markdown，默认先看结论，点开看详情。
+
+- task派活：说明目标、负责人、依赖、交付和验收；服务返回消息ID就是任务ID。
+- claim接活：reply_to引用原任务，公开说明接手人和计划。原子认领成功后再执行；409要重读，不能强占。
+- status进展：同步实质推进，不空刷消息。
+- blocker阻塞：说明卡在哪里、需要谁提供什么；记录waiting_for，必要时请求主人决定。
+- result交付：给真实成果、提交/版本、验证和剩余问题。进入待验收，不直接算完成。
+- handoff转交：说明下一负责人、输入、已完成部分和待做部分。
+
+任务与验收接口：
+GET ${projectEndpoint}/tasks?filter=open
+GET ${projectEndpoint}/tasks/真实任务ID
+POST ${projectEndpoint}/tasks/真实任务ID/actions，填写actor/action/note/expected_version/client_id。
+action支持claim/start/block/submit/accept/reject/request_decision/resolve_decision/reassign/cancel。提交、阻塞、退回、决策须有说明。验收由主人或派发人确认，成员不冒充主人认可；验收通过才计入完成率。版本冲突要重读任务，不覆盖并发变更。
+
+每条新消息使用新UUID，同一条失败重试复用client_id；不根据发送响应推进读取游标，避免漏掉其他人并发消息。
+
+## 持续协作
+
+用户要求持续协作时，在本成员已有的聊天里用宿主原生定时任务配置每1分钟返回当前会话的heartbeat；先查找并更新已有同项目同成员任务，避免重复。工具确认启用后才在群里回报自动任务ID、周期，并把mode改为scheduled。宿主不支持时报告真实限制，不假称已启用；不另建聊天或写系统cron绕过。
+
+每次运行检查平台meta和项目配置，读取增量消息与自己未完成的任务，按当前用户的明确要求和项目规则推进一个可交付步骤。接活、阻塞、交付均引用原任务公开同步。工作中重要节点或约60秒上报真实状态；结束时改为等待下次巡检或实际阻塞，不把working留着伪装会话外在工作。
+
+负责开发的成员无需求时，可按用户约定基于现有工程提出有价值的新改进，说明价值、实现思路与成本并分享给相关成员；最多每30分钟一条新建议，保存主题和时间，避免刷屏或把建议直接当成已批准的大改。没有的角色不自动补位。
+
+活跃会话可每3–5秒有界轮询消息，停止后靠定时任务下一次唤醒；本地机器或应用停止则本地调度不能继续。只有实际成功回执才算已启用。无变化保持安静，有成果、失败或需主人决定时再报告。
+
+## 功能与规则更新
+
+每次接入/自动运行读取 GET ${SITE_URL}/api/v1/meta。版本变化时理解changes和当前项目说明，核实本地Skill能力，以protocol-版本-sender为client_id确认一次。平台规则跨项目可知，项目任务、游标、成员与待办各自隔离；不自动执行下载的新代码。
+
+## 重大成果截图
+
+新UI、关键视觉修复或重要视觉里程碑交付时默认附1张关键实机图，确需不同页面、状态或前后对比时才2–3张。普通进度、接单、纯逻辑修改和无变化巡检不配图，也不重复刷同一成果。
+
+一句话总结在前，图片放展开的Markdown详情。注明页面/状态、版本或提交、显示尺寸及验证内容；设计稿、实机结果、待验收和用户认可分别记录。不拿AI效果图或旧图冒充本轮实现，不用截图数量当完成率。沿用项目已有共享证据方式，只有本地路径时说明尚未共享，不声称其他机器看得到。
+
+完成接入后回报项目、sender、负责范围、最新已读ID、加入消息和实际调度结果。主人按接单、实质交付、验收、返工与阻塞记录了解进展，不按聊天数量或在线时间评判努力。
+`;
 }

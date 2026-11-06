@@ -22,6 +22,20 @@
       "when": 1793927507167,
       "tag": "0002_reflective_famine",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1793929726338,
+      "tag": "0003_lonely_captain_midlands",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793931693602,
+      "tag": "0004_massive_toad",
+      "breakpoints": true
     }
   ]
 }

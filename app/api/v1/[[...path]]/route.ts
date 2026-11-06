@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
-import { validRole } from "../../../../lib/agent-guide";
+import { listMembers } from "../../../../lib/member-service";
 import { messageSummary } from "../../../../lib/message-summary";
+import { handleProjects } from "../../../../lib/project-api";
+import { findTask, publishMessage, TaskError } from "../../../../lib/task-service";
 export const dynamic = "force-dynamic";
 const KINDS = ["message", "status", "decision", "blocker", "handoff", "task", "claim", "result"];
 class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
@@ -42,14 +44,17 @@ async function rateLimit(request: Request, action: string, max: number) {
 async function route(request: Request) {
   const db = env.DB; if (!db) fail(503, "数据库暂不可用");
   const url = new URL(request.url); const path = url.pathname.slice("/api/v1".length).replace(/\/$/, ""); const method = request.method;
-  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "1.4.1", api_version: 1,
-    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill", "markdown-messages", "message-summary"],
+  if(method!=="GET"&&env.RELAY_READ_ONLY==="1")return json({error:{message:"聊天室正在迁移或已切换为只读，请使用新的直连入口："+(env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||""),code:"relay_read_only"},canonical_url:env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||null},409);
+  if (path === "/projects" || path.startsWith("/projects/") || path === "/tasks") return handleProjects(request);
+  if (path === "/meta" && method === "GET") return json({ service: "codex-relay", protocol_version: "2.0.0", api_version: 1,
+    capabilities: ["rooms", "history", "idempotent-messages", "agent-status", "public-task-handoff", "collaboration-skill", "markdown-messages", "message-summary", "project-overview", "tracked-tasks", "atomic-claims", "task-review","custom-members","self-hosted-compatible"],
+    canonical_url:env.RELAY_REDIRECT_URL||env.RELAY_PUBLIC_URL||url.origin,read_only:env.RELAY_READ_ONLY==="1",runtime:env.RELAY_RUNTIME||"cloudflare",release_sha:env.RELAY_RELEASE_SHA||null,
     skill_repository: "https://github.com/1206660/CodexRelay/tree/main/skills/codex-relay",
-    changes: ["重大视觉成果附关键实机截图：默认1张，必要才2–3张", "普通进度和无变化巡检不配图、不重复刷截图；图片放在展开详情", "截图注明页面、版本/提交、尺寸与验收状态，不能把设计图或旧图冒充本轮实现"],
+    changes: ["首页升级多项目总控台：验收进度、成员工作、阻塞与主人待办", "task派活登记任务、claim原子接单、result只进入待验收；验收通过才计入完成", "项目内任务和聊天公开联动，版本检查防止并发覆盖；历史聊天和旧链接保留"],
     agent_guide: "/join.txt", requires_acknowledgement: true });
   if (path === "/health" && method === "GET") {
     await db.prepare("SELECT id FROM rooms LIMIT 1").all();
-    return json({ ok: true, service: "codex-relay", access: "public", api_version: 1 });
+    return json({ ok: true, service: "codex-relay", access: "public", api_version: 1,runtime:env.RELAY_RUNTIME||"cloudflare" });
   }
   if (path === "/rooms" && method === "GET") {
     const limit = Math.min(100, Math.max(1, num(url.searchParams.get("limit"), "limit", 50)));
@@ -77,12 +82,13 @@ async function route(request: Request) {
   if (match[2] === "/agents" && method === "GET") {
     const now = Date.now();
     const result = await db.prepare("SELECT * FROM agents WHERE room_id=? ORDER BY updated_at DESC LIMIT 100").bind(roomId).all<any>();
-    return json({ agents: result.results.map(a => ({ ...a, stale: now - a.updated_at > 180000 })), server_time: now, stale_after_ms: 180000 });
+    return json({ agents: result.results.map(a => ({ ...a, stale: now - a.updated_at > 180000 })), members:await listMembers(db,roomId),server_time: now, stale_after_ms: 180000 });
   }
   if (match[2] === "/agents" && method === "POST") {
     const data = await body(request);
     const sender = str(data.sender, "发送者", 80);
-    if (typeof data.role !== "string" || !validRole(data.role)) fail(400, "role 必须为 planner、ui 或 developer");
+    const role=str(data.role,"角色",40,true).replace(/\s+/g," ")||"成员";
+    const displayName=str(data.display_name,"显示名",80,true)||sender,responsibility=str(data.responsibility,"负责范围",2000,true);
     if (!["listening", "working", "waiting", "brainstorming", "blocked", "done", "offline"].includes(data.state)) fail(400, "工作状态不支持");
     const task = str(data.task, "当前任务", 1000, true);
     const waitingFor = str(data.waiting_for, "等待对象", 80, true) || null;
@@ -92,10 +98,12 @@ async function route(request: Request) {
     if (!Number.isSafeInteger(readId) || readId < 0) fail(400, "last_read_id 必须是非负整数");
     if (readId > 0 && !await db.prepare("SELECT id FROM messages WHERE room_id=? AND id=?").bind(roomId, readId).first()) fail(400, "读取游标不属于当前房间");
     await rateLimit(request, "agent", 120);
-    const agent = await db.prepare(`INSERT INTO agents(key,room_id,sender,role,state,task,waiting_for,mode,last_read_id,updated_at)
+    const agentStatement = db.prepare(`INSERT INTO agents(key,room_id,sender,role,state,task,waiting_for,mode,last_read_id,updated_at)
       VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET role=excluded.role,state=excluded.state,task=excluded.task,
       waiting_for=excluded.waiting_for,mode=excluded.mode,last_read_id=MAX(agents.last_read_id,excluded.last_read_id),updated_at=excluded.updated_at RETURNING *`)
-      .bind(roomId + ":" + sender, roomId, sender, data.role, data.state, task, waitingFor, mode, readId, Date.now()).first();
+      .bind(roomId + ":" + sender, roomId, sender, role, data.state, task, waitingFor, mode, readId, Date.now());
+    const results=await db.batch([agentStatement,db.prepare("INSERT INTO project_members(key,room_id,sender,display_name,role,responsibility,active,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?) ON CONFLICT(key) DO NOTHING").bind(roomId+":"+sender,roomId,sender,displayName,role,responsibility,Date.now(),Date.now())]);
+    const agent=results[0].results[0];
     return json({ agent }, 200);
   }
   if (match[2] === "/messages" && method === "GET") {
@@ -103,9 +111,9 @@ async function route(request: Request) {
     if (url.searchParams.has("after") && url.searchParams.has("before")) fail(400, "after 与 before 不能同时使用");
     const incremental = url.searchParams.has("after"); const limit = Math.min(100, Math.max(1, num(url.searchParams.get("limit"), "limit", 50)));
     const result = incremental
-      ? await db.prepare("SELECT * FROM messages WHERE room_id=? AND id>? ORDER BY id ASC LIMIT ?").bind(roomId, after, limit + 1).all<any>()
-      : before ? await db.prepare("SELECT * FROM messages WHERE room_id=? AND id<? ORDER BY id DESC LIMIT ?").bind(roomId, before, limit + 1).all<any>()
-      : await db.prepare("SELECT * FROM messages WHERE room_id=? ORDER BY id DESC LIMIT ?").bind(roomId, limit + 1).all<any>();
+      ? await db.prepare("SELECT m.*,t.id AS task_id FROM messages m LEFT JOIN tasks t ON t.room_id=m.room_id AND t.id=CASE WHEN m.kind='task' THEN m.id ELSE m.reply_to END WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?").bind(roomId, after, limit + 1).all<any>()
+      : before ? await db.prepare("SELECT m.*,t.id AS task_id FROM messages m LEFT JOIN tasks t ON t.room_id=m.room_id AND t.id=CASE WHEN m.kind='task' THEN m.id ELSE m.reply_to END WHERE m.room_id=? AND m.id<? ORDER BY m.id DESC LIMIT ?").bind(roomId, before, limit + 1).all<any>()
+      : await db.prepare("SELECT m.*,t.id AS task_id FROM messages m LEFT JOIN tasks t ON t.room_id=m.room_id AND t.id=CASE WHEN m.kind='task' THEN m.id ELSE m.reply_to END WHERE m.room_id=? ORDER BY m.id DESC LIMIT ?").bind(roomId, limit + 1).all<any>();
     const rows = result.results.slice(0, limit); if (!incremental) rows.reverse();
     return json({ messages: rows, has_more: result.results.length > limit, next_cursor: rows.at(-1)?.id ?? after, oldest_cursor: rows[0]?.id ?? null });
   }
@@ -120,21 +128,20 @@ async function route(request: Request) {
     }
     const existing = await db.prepare("SELECT * FROM messages WHERE room_id=? AND sender=? AND client_id=?").bind(roomId, sender, clientId).first<any>();
     const same = (m: any) => m.content === content && m.kind === kind && m.recipient === recipient && m.reply_to === replyTo && (data.summary === undefined || m.summary === summary);
-    if (existing) { if (!same(existing)) fail(409, "client_id 已用于其他内容"); return json({ message: existing, deduplicated: true }); }
+    if (existing) { if (!same(existing)) fail(409, "client_id 已用于其他内容"); return json({ message: existing, deduplicated: true, task: kind === "task" ? await findTask(db,roomId,existing.id) : replyTo ? await findTask(db,roomId,replyTo) : null }); }
     await rateLimit(request, "message", 60);
-    const inserted = await db.prepare(`INSERT INTO messages(room_id,sender,content,summary,kind,recipient,reply_to,client_id,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(room_id,sender,client_id) DO NOTHING RETURNING *`).bind(roomId, sender, content, summary, kind, recipient, replyTo, clientId, Date.now()).first<any>();
-    const message = inserted ?? await db.prepare("SELECT * FROM messages WHERE room_id=? AND sender=? AND client_id=?").bind(roomId, sender, clientId).first<any>();
-    if (!same(message)) fail(409, "client_id 已用于其他内容"); return json({ message, deduplicated: !inserted }, inserted ? 201 : 200);
+    const result=await publishMessage(db,{room:roomId,sender,content,summary,summaryProvided:data.summary!==undefined,kind,recipient,replyTo,clientId});
+    return json(result,result.deduplicated?200:201);
   }
   fail(405, "不支持的请求方法");
 }
 async function handle(request: Request) {
   try { return await route(request); } catch (error) {
-    if (error instanceof ApiError) return json({ error: { message: error.message } }, error.status, error.status === 429 ? { "Retry-After": "60" } : {});
+    if (error instanceof ApiError || error instanceof TaskError) return json({ error: { message: error.message } }, error.status, error.status === 429 ? { "Retry-After": "60" } : {});
     console.error("Relay API failure", error instanceof Error ? error.message : "unknown");
     return json({ error: { message: "服务暂不可用，请重试" } }, 503);
   }
 }
 export const GET = handle;
 export const POST = handle;
+export const PATCH = handle;

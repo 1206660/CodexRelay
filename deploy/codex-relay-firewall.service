@@ -1,0 +1,11 @@
+[Unit]
+Description=Allow the dedicated public Codex Relay HTTPS port
+Before=codex-relay.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'if command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p tcp --dport 9444 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 9444 -j ACCEPT; fi'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

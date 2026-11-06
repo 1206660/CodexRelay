@@ -13,7 +13,8 @@ import uuid
 import hashlib
 import re
 
-DEFAULT_URL = "https://codex-task-relay.ideal-hero-2137.chatgpt.site"
+DEFAULT_URL = "https://192.227.231.68:9444"
+LEGACY_URL = "https://codex-task-relay.ideal-hero-2137.chatgpt.site"
 ROLES = {"planner": "策划：输出设计想法、需求和验收标准，协调程序打包发布", "ui": "UI：设计与替换界面，承接新界面制作并提交给程序接入", "developer": "程序：按需求开发、集成和验证发布，无需求时主动脑暴分享"}
 
 
@@ -23,9 +24,9 @@ class Relay:
         if urllib.parse.urlparse(self.base).scheme not in ("https", "http"):
             raise ValueError("URL must use HTTP or HTTPS")
 
-    def request(self, path, data=None):
+    def request(self, path, data=None, method=None):
         payload = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(self.base + "/api/v1" + path, data=payload,
+        request = urllib.request.Request(self.base + "/api/v1" + path, data=payload, method=method,
                                         headers={"Content-Type": "application/json", "User-Agent": "CodexRelay/1.0"})
         for attempt in range(3):
             try:
@@ -33,6 +34,14 @@ class Relay:
                     return json.load(response)
             except urllib.error.HTTPError as exc:
                 raw = exc.read().decode("utf-8", errors="replace")
+                if exc.code in (301,302,307,308) and exc.headers.get("Location"):
+                    location=urllib.parse.urljoin(request.full_url,exc.headers["Location"])
+                    old=urllib.parse.urlparse(request.full_url);new=urllib.parse.urlparse(location)
+                    old_origin=f"{old.scheme}://{old.netloc}";new_origin=f"{new.scheme}://{new.netloc}"
+                    if new.username or new.password or not (new_origin==old_origin or old_origin==LEGACY_URL and new_origin==DEFAULT_URL):
+                        raise RuntimeError("Relay redirected to another server; update --url after confirming the destination") from exc
+                    request=urllib.request.Request(location,data=payload,headers={"Content-Type":"application/json","User-Agent":"CodexRelay/2.0"},method=request.get_method())
+                    continue
                 if exc.code in (429, 502, 503, 504) and attempt < 2:
                     time.sleep(min(60, max(1, int(exc.headers.get("Retry-After", 2 ** attempt)))))
                     continue
@@ -62,10 +71,12 @@ class Relay:
             **({"summary": summary} if summary is not None else {}),
         })
 
-    def status(self, room, sender, role, state, task="", waiting_for=None, mode="manual", last_read_id=0):
+    def status(self, room, sender, role, state, task="", waiting_for=None, mode="manual", last_read_id=0, display_name=None, responsibility=None):
         return self.request("/rooms/" + urllib.parse.quote(room, safe="") + "/agents", {
             "sender": sender, "role": role, "state": state, "task": task,
             "waiting_for": waiting_for, "mode": mode, "last_read_id": last_read_id,
+            **({"display_name":display_name} if display_name is not None else {}),
+            **({"responsibility":responsibility} if responsibility is not None else {}),
         })
 
 
@@ -80,6 +91,8 @@ def journal(relay, args):
     state = {"url": relay.base, "room": args.room, "sender": args.sender, "last_read_id": 0}
     if path.exists():
         saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved.get("url")==LEGACY_URL and relay.base==DEFAULT_URL:
+            saved["url"]=relay.base
         if any(saved.get(key) != state[key] for key in ("url", "room", "sender")):
             raise ValueError("State file belongs to another server, room or sender")
         state = saved
@@ -128,19 +141,34 @@ def main():
     watch = sub.add_parser("watch"); watch.add_argument("--after", type=int, default=0)
     watch.add_argument("--cursor-file", help="Separate cursor file for each room and consumer")
     watch.add_argument("--interval", type=float, default=3); watch.add_argument("--duration", type=float, default=60, help="Seconds; 0 watches until interrupted")
-    status = sub.add_parser("status"); status.add_argument("--role", required=True, choices=["planner", "ui", "developer"])
+    status = sub.add_parser("status"); status.add_argument("--role", required=True)
     status.add_argument("--state", required=True, choices=["listening", "working", "waiting", "brainstorming", "blocked", "done", "offline"])
     status.add_argument("--task", default=""); status.add_argument("--waiting-for"); status.add_argument("--mode", default="manual", choices=["manual", "scheduled", "continuous"])
     status.add_argument("--last-read-id", type=int, default=0)
-    join = sub.add_parser("join"); join.add_argument("--role", required=True, choices=list(ROLES)); join.add_argument("--intro", default="")
+    join = sub.add_parser("join"); join.add_argument("--role", required=True); join.add_argument("--intro", default=""); join.add_argument("--name", help="Display name; defaults to sender")
     sub.add_parser("sync"); sub.add_parser("agents"); sub.add_parser("meta")
+    project_list = sub.add_parser("projects"); project_list.add_argument("--search", default=""); project_list.add_argument("--filter", default="all"); project_list.add_argument("--include-test", action="store_true")
+    task_list = sub.add_parser("tasks"); task_list.add_argument("--filter", default="open"); task_list.add_argument("--assignee"); task_list.add_argument("--offset", type=int, default=0)
+    task_detail = sub.add_parser("task"); task_detail.add_argument("id", type=int)
+    task_action = sub.add_parser("task-action"); task_action.add_argument("id", type=int); task_action.add_argument("--action", required=True, choices=["claim","start","block","submit","accept","reject","request_decision","resolve_decision","reassign","cancel"])
+    task_action.add_argument("--note", default=""); task_action.add_argument("--file"); task_action.add_argument("--assigned-to"); task_action.add_argument("--waiting-for"); task_action.add_argument("--needs-owner", action="store_true"); task_action.add_argument("--client-id")
     args = parser.parse_args(); relay = Relay(args.url)
-    if args.command not in ("rooms", "meta") and not args.room:
+    if args.command in ("join","status") and (not args.role.strip() or len(args.role)>40 or '\n' in args.role or '\r' in args.role):
+        parser.error("role must be a single-line name of 1–40 characters")
+    if args.command=="join" and (len(args.intro)>2000 or args.name and (len(args.name)>80 or '\n' in args.name or '\r' in args.name)):
+        parser.error("intro must fit 2000 characters and display name must be a single line up to 80 characters")
+    if args.command not in ("rooms", "meta", "projects") and not args.room:
         parser.error("--room is required")
     if args.room and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", args.room):
         parser.error("invalid room ID")
     if args.command == "join" and args.sender == "codex":
-        args.sender = args.room[:60] + "-" + args.role
+        saved_identity=None
+        if args.state_file and pathlib.Path(args.state_file).exists():
+            saved_identity=json.loads(pathlib.Path(args.state_file).read_text(encoding="utf-8"))
+            if saved_identity.get("room")!=args.room or saved_identity.get("url")!=relay.base:
+                raise ValueError("State file belongs to another room or server")
+        role_slug=re.sub(r"[^A-Za-z0-9_-]","",args.role).lower()[:16] or "member"
+        args.sender=saved_identity["sender"] if saved_identity else args.room[:40]+"-"+role_slug+"-"+uuid.uuid4().hex[:6]
     if args.command == "rooms":
         output(relay.request("/rooms?" + urllib.parse.urlencode({"q": args.search, "offset": args.offset})))
     elif args.command == "create":
@@ -171,6 +199,18 @@ def main():
         output(relay.request("/rooms/" + args.room + "/agents"))
     elif args.command == "meta":
         output(relay.request("/meta"))
+    elif args.command == "projects":
+        output(relay.request("/projects?" + urllib.parse.urlencode({"q":args.search,"filter":args.filter,"include_test":"1" if args.include_test else "0"})))
+    elif args.command == "tasks":
+        query={"filter":args.filter,"offset":args.offset}
+        if args.assignee: query["assignee"]=args.assignee
+        output(relay.request("/projects/"+args.room+"/tasks?"+urllib.parse.urlencode(query)))
+    elif args.command == "task":
+        output(relay.request(f"/projects/{args.room}/tasks/{args.id}"))
+    elif args.command == "task-action":
+        task=relay.request(f"/projects/{args.room}/tasks/{args.id}")["task"]
+        note=pathlib.Path(args.file).read_text(encoding="utf-8-sig") if args.file else args.note
+        output(relay.request(f"/projects/{args.room}/tasks/{args.id}/actions", {"actor":args.sender,"action":args.action,"note":note,"assigned_to":args.assigned_to,"waiting_for":args.waiting_for,"needs_decision":args.needs_owner,"expected_version":task["version"],"client_id":args.client_id or str(uuid.uuid4())}))
     elif args.command in ("join", "sync"):
         path, state = journal(relay, args)
         if args.command == "join":
@@ -184,28 +224,44 @@ def main():
                 except RuntimeError as conflict:
                     if "HTTP 409:" not in str(conflict):
                         raise
-            if state.get("role") not in (None, args.role):
-                raise ValueError("This sender is already registered with another role")
             state["role"] = args.role
             state.setdefault("join_id", str(uuid.uuid4()))
             save_journal(path, state)
         meta = relay.request("/meta")
+        output({"event":"server_state","read_only":bool(meta.get("read_only")),"canonical_url":meta.get("canonical_url",relay.base)})
+        if args.command=="join" and meta.get("read_only"):
+            raise RuntimeError("Relay is temporarily read-only; resume after migration at "+meta.get("canonical_url",relay.base))
         if state.get("protocol_version") != meta["protocol_version"]:
             output({"event": "protocol_update", "metadata": meta})
             # A change is read, but only the Codex caller can acknowledge understanding it.
             state["protocol_version"] = meta["protocol_version"]
             save_journal(path, state)
+        if "project-overview" in meta.get("capabilities", []):
+            project=relay.request("/projects/"+args.room)["project"]
+            state["project_status"]=project["project_status"]
+            member=next((m for m in project.get("members",[]) if m["sender"]==args.sender),None)
+            state["member_active"]=member["active"] if member else 1
+            output({"event":"project_context","project":{"id":project["id"],"name":project["name"],"goal":project["goal"],"milestone":project["milestone"],"status":project["project_status"]},"member":member})
+            pending=[]; offset=0
+            while True:
+                page=relay.request("/projects/"+args.room+"/tasks?"+urllib.parse.urlencode({"filter":"open","assignee":args.sender,"limit":100,"offset":offset}))
+                pending.extend({key:t[key] for key in ("id","title","status","assignee","assigned_to","needs_decision","blocker","due_at","version")} for t in page["tasks"])
+                if not page["has_more"]: break
+                offset=page["next_offset"]
+            output({"event":"my_tasks","tasks":pending})
         count = sync_history(relay, args.room, path, state)
         if args.command == "join":
             first_join = not state.get("join_announced")
             if first_join:
-                intro = args.intro or ROLES[args.role]
+                intro = args.intro or ROLES.get(args.role,args.role+"：按项目实际分工协作")
                 message = relay.send(args.room, args.sender, f"## 身份与职责\n- **我是谁**：{args.sender}\n- **负责什么**：{intro}\n\n## 当前状态\n已读取历史，准备按项目现有规则参与协作。\n\n## 协作方式\n公开派活、接活、进展、阻塞和交付；点名消息仍然全群可见。", "status", client_id=state["join_id"], summary=f"{args.sender} 已入群，已说明职责并读取历史，准备接续协作。")
                 state["join_announced"] = True
                 save_journal(path, state)
                 output({"event": "joined", "message": message["message"]})
-            if first_join:
-                output(relay.status(args.room, args.sender, args.role, "waiting", "已加入并同步历史；尚未确认定时巡检启用", mode="manual", last_read_id=state["last_read_id"]))
+            if first_join or not state.get("status_registered"):
+                intro=args.intro or ROLES.get(args.role,args.role+"：按项目实际分工协作")
+                output(relay.status(args.room, args.sender, args.role, "waiting", "项目已暂停或归档，等待主人恢复" if state.get("project_status") in ("paused","archived") else "已加入并同步历史；尚未确认定时巡检启用", mode="manual", last_read_id=state["last_read_id"],display_name=args.name or args.sender,responsibility=intro))
+                state["status_registered"]=True;save_journal(path,state)
         output({"event": "synced", "room": args.room, "sender": args.sender, "last_read_id": state["last_read_id"], "messages_read": count, "state_file": str(path)})
     elif args.command == "watch":
         cursor_path = pathlib.Path(args.cursor_file) if args.cursor_file else None
